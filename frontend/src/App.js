@@ -1,13 +1,21 @@
-import React, { useState, useEffect, useCallback, useMemo } from "react";
+import React, { useState, useEffect, useCallback, useMemo, createContext, useContext } from "react";
 import axios from "axios";
 import "./App.css";
 import {
   LayoutDashboard, Users, Wallet, ListChecks, Settings,
-  Menu, X, Download, Upload, FileBarChart2, Printer, Coins
+  Menu, Download, Upload, FileBarChart2, Printer, Coins,
+  UserCog, Bell, LogOut, KeyRound, BellRing, CheckCheck, Phone
 } from "lucide-react";
 
 const API = `${process.env.REACT_APP_BACKEND_URL}/api`;
 const api = axios.create({ baseURL: API });
+
+// Attach token from localStorage
+api.interceptors.request.use((cfg) => {
+  const t = localStorage.getItem("token");
+  if (t) cfg.headers.Authorization = `Bearer ${t}`;
+  return cfg;
+});
 
 /* ================= Helpers ================= */
 const pad = (n, len) => String(n).padStart(len, "0");
@@ -32,14 +40,127 @@ const isVencida = (q) => {
 };
 const saldoPendiente = (c) => c.cuotas.filter((q) => q.estado !== "Pagada").reduce((s, q) => s + q.total, 0);
 const creditEstado = (c) => (c.cuotas.every((q) => q.estado === "Pagada") ? "Pagado" : "Activo");
+const errMsg = (e, fb = "Error") => {
+  const d = e?.response?.data?.detail;
+  if (typeof d === "string") return d;
+  if (Array.isArray(d)) return d.map((x) => x.msg).join(" · ");
+  return fb;
+};
 
-/* ================= Root App ================= */
-export default function App() {
+/* ================= Auth Context ================= */
+const AuthCtx = createContext(null);
+const useAuth = () => useContext(AuthCtx);
+
+function AuthProvider({ children }) {
+  const [user, setUser] = useState(null); // null=checking, false=logged out, obj=logged in
+  const [error, setError] = useState("");
+
+  const check = useCallback(async () => {
+    const token = localStorage.getItem("token");
+    if (!token) { setUser(false); return; }
+    try {
+      const r = await api.get("/auth/me");
+      setUser(r.data);
+    } catch {
+      localStorage.removeItem("token");
+      setUser(false);
+    }
+  }, []);
+
+  useEffect(() => { check(); }, [check]);
+
+  const login = async (username, password) => {
+    try {
+      setError("");
+      const r = await api.post("/auth/login", { username, password });
+      localStorage.setItem("token", r.data.token);
+      setUser(r.data.user);
+      return true;
+    } catch (e) {
+      setError(errMsg(e, "No se pudo iniciar sesión"));
+      return false;
+    }
+  };
+
+  const logout = () => {
+    localStorage.removeItem("token");
+    setUser(false);
+  };
+
+  return <AuthCtx.Provider value={{ user, login, logout, error, refresh: check }}>{children}</AuthCtx.Provider>;
+}
+
+/* ================= Login Screen ================= */
+function LoginScreen() {
+  const { login, error } = useAuth();
+  const [u, setU] = useState("");
+  const [p, setP] = useState("");
+  const [busy, setBusy] = useState(false);
+
+  const submit = async (e) => {
+    e.preventDefault();
+    setBusy(true);
+    await login(u, p);
+    setBusy(false);
+  };
+
+  return (
+    <div className="login-shell">
+      <div className="login-card">
+        <div className="login-hero">
+          <div className="brand-logo" style={{ background: "var(--brand)", color: "#F1D6A0" }}>
+            <BrandIcon />
+          </div>
+          <h1 className="login-title">Cartera de Créditos</h1>
+          <p className="login-sub">Gestión de préstamos y cobranzas</p>
+        </div>
+        <form onSubmit={submit} className="login-form">
+          <div className="field">
+            <label>Usuario</label>
+            <input value={u} onChange={(e) => setU(e.target.value)} autoFocus data-testid="login-username" placeholder="admin" />
+          </div>
+          <div className="field">
+            <label>Contraseña</label>
+            <input type="password" value={p} onChange={(e) => setP(e.target.value)} data-testid="login-password" placeholder="••••••" />
+          </div>
+          {error && <div className="hint error" data-testid="login-error">{error}</div>}
+          <button className="btn btn-primary btn-block" disabled={busy} data-testid="login-submit">
+            {busy ? "Ingresando…" : "Ingresar"}
+          </button>
+        </form>
+        <div className="login-hint">
+          ¿Primera vez? Usuario <b>admin</b> / clave <b>admin123</b>. Cámbiala luego desde Configuración.
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* ================= App ================= */
+export default function AppWrapper() {
+  return (
+    <AuthProvider>
+      <RootView />
+    </AuthProvider>
+  );
+}
+
+function RootView() {
+  const { user } = useAuth();
+  if (user === null) return <div className="loading-msg">Cargando…</div>;
+  if (!user) return <LoginScreen />;
+  return <App />;
+}
+
+/* ================= Main App ================= */
+function App() {
+  const { user, logout } = useAuth();
+  const isAdmin = user.role === "admin";
   const [view, setView] = useState("dashboard");
   const [clients, setClients] = useState([]);
   const [credits, setCredits] = useState([]);
+  const [users, setUsers] = useState([]);
   const [config, setConfig] = useState({ nombre: "Mi Financiera", ruc: "", moneda: "S/", mora_diaria_pct: 0 });
-  const [operator, setOperator] = useState(localStorage.getItem("operator") || "");
   const [loading, setLoading] = useState(true);
   const [modal, setModal] = useState(null);
   const [receipt, setReceipt] = useState(null);
@@ -53,61 +174,79 @@ export default function App() {
 
   const loadAll = useCallback(async () => {
     try {
-      const [cfg, cls, crs] = await Promise.all([
-        api.get("/config"), api.get("/clients"), api.get("/credits"),
-      ]);
-      setConfig(cfg.data);
-      setClients(cls.data);
-      setCredits(crs.data);
+      const reqs = [api.get("/config"), api.get("/clients"), api.get("/credits")];
+      if (isAdmin) reqs.push(api.get("/users"));
+      const res = await Promise.all(reqs);
+      setConfig(res[0].data);
+      setClients(res[1].data);
+      setCredits(res[2].data);
+      if (isAdmin) setUsers(res[3].data);
     } catch (e) {
       console.error(e);
-      showToast("Error al cargar datos", "error");
+      showToast(errMsg(e, "Error al cargar datos"), "error");
     } finally {
       setLoading(false);
     }
-  }, [showToast]);
+  }, [isAdmin, showToast]);
 
   useEffect(() => { loadAll(); }, [loadAll]);
-  useEffect(() => { localStorage.setItem("operator", operator); }, [operator]);
 
   const clientById = useCallback((id) => clients.find((c) => c.id === id), [clients]);
   const creditsByClient = useCallback((id) => credits.filter((c) => c.clientId === id), [credits]);
+  const userById = useCallback((id) => users.find((u) => u.id === id), [users]);
 
   const openModal = (m) => setModal(m);
   const closeModal = () => setModal(null);
 
   if (loading) return <div className="loading-msg">Cargando…</div>;
 
-  const pageTitle = { dashboard: "Panel general", clientes: "Clientes", creditos: "Créditos", cuotas: "Cuotas", cobranzas: "Reporte de cobranzas", config: "Configuración" }[view] || "";
+  const pageTitle = {
+    dashboard: "Panel general",
+    clientes: "Clientes",
+    creditos: "Créditos",
+    cuotas: "Cuotas",
+    recordatorios: "Recordatorios",
+    cobranzas: "Reporte de cobranzas",
+    asesores: "Asesores",
+    config: "Configuración",
+  }[view] || "";
 
   const navigate = (v) => { setView(v); setSidebarOpen(false); };
 
   const ctx = {
-    config, clients, credits, operator, clientById, creditsByClient,
+    user, isAdmin, config, clients, credits, users,
+    clientById, creditsByClient, userById,
     loadAll, openModal, closeModal, showToast, setReceipt, navigate,
   };
 
   return (
     <div className="app">
-      <div className={`sidebar-backdrop ${sidebarOpen ? "show" : ""}`} onClick={() => setSidebarOpen(false)} data-testid="sidebar-backdrop" />
+      <div className={`sidebar-backdrop ${sidebarOpen ? "show" : ""}`} onClick={() => setSidebarOpen(false)} />
       <aside className={`sidebar ${sidebarOpen ? "open" : ""}`} data-testid="sidebar">
-        <div className="brand-logo" aria-hidden="true">
-          <BrandIcon />
-        </div>
+        <div className="brand-logo" aria-hidden="true"><BrandIcon /></div>
         <div className="brand">
           <div className="brand-mark" data-testid="brand-name">{config.nombre}</div>
           <div className="brand-sub">Gestión de Créditos</div>
         </div>
         <nav className="nav">
-          <NavBtn active={view === "dashboard"} onClick={() => navigate("dashboard")} icon={<LayoutDashboard />} label="Panel" tid="nav-dashboard" />
-          <NavBtn active={view === "clientes"} onClick={() => navigate("clientes")} icon={<Users />} label="Clientes" tid="nav-clientes" />
-          <NavBtn active={view === "creditos"} onClick={() => navigate("creditos")} icon={<Wallet />} label="Créditos" tid="nav-creditos" />
-          <NavBtn active={view === "cuotas"} onClick={() => navigate("cuotas")} icon={<ListChecks />} label="Cuotas" tid="nav-cuotas" />
-          <NavBtn active={view === "cobranzas"} onClick={() => navigate("cobranzas")} icon={<FileBarChart2 />} label="Cobranzas" tid="nav-cobranzas" />
-          <NavBtn active={view === "config"} onClick={() => navigate("config")} icon={<Settings />} label="Configuración" tid="nav-config" />
+          <NavBtn active={view === "dashboard"} onClick={() => navigate("dashboard")} icon={<LayoutDashboard size={18} />} label="Panel" tid="nav-dashboard" />
+          <NavBtn active={view === "clientes"} onClick={() => navigate("clientes")} icon={<Users size={18} />} label="Clientes" tid="nav-clientes" />
+          <NavBtn active={view === "creditos"} onClick={() => navigate("creditos")} icon={<Wallet size={18} />} label="Créditos" tid="nav-creditos" />
+          <NavBtn active={view === "cuotas"} onClick={() => navigate("cuotas")} icon={<ListChecks size={18} />} label="Cuotas" tid="nav-cuotas" />
+          <NavBtn active={view === "recordatorios"} onClick={() => navigate("recordatorios")} icon={<Bell size={18} />} label="Recordatorios" tid="nav-recordatorios" />
+          <NavBtn active={view === "cobranzas"} onClick={() => navigate("cobranzas")} icon={<FileBarChart2 size={18} />} label="Cobranzas" tid="nav-cobranzas" />
+          {isAdmin && <NavBtn active={view === "asesores"} onClick={() => navigate("asesores")} icon={<UserCog size={18} />} label="Asesores" tid="nav-asesores" />}
+          <NavBtn active={view === "config"} onClick={() => navigate("config")} icon={<Settings size={18} />} label="Configuración" tid="nav-config" />
         </nav>
         <div className="sidebar-footer">
-          {clients.length} clientes<br />{credits.length} créditos registrados
+          <div className="user-chip">
+            <div className="user-chip-avatar">{(user.name || user.username).slice(0, 1).toUpperCase()}</div>
+            <div className="user-chip-info">
+              <div className="user-chip-name">{user.name || user.username}</div>
+              <div className="user-chip-role">{user.role === "admin" ? "Administrador" : "Asesor"}</div>
+            </div>
+            <button className="user-chip-logout" onClick={logout} title="Cerrar sesión" data-testid="logout-btn"><LogOut size={16} /></button>
+          </div>
         </div>
       </aside>
 
@@ -115,20 +254,11 @@ export default function App() {
         <div className="topbar">
           <div className="topbar-left">
             <button className="mobile-menu-btn" onClick={() => setSidebarOpen(true)} aria-label="Abrir menú" data-testid="mobile-menu-btn">
-              <Menu />
+              <Menu size={22} />
             </button>
             <div className="page-title" data-testid="page-title">{pageTitle}</div>
           </div>
           <div className="topbar-right">
-            <div className="operator-field">
-              Atendido por
-              <input
-                data-testid="operator-input"
-                value={operator}
-                placeholder="tu nombre"
-                onChange={(e) => setOperator(e.target.value)}
-              />
-            </div>
             <div className="today">{fmtDate(new Date())}</div>
           </div>
         </div>
@@ -138,7 +268,9 @@ export default function App() {
           {view === "clientes" && <Clientes ctx={ctx} />}
           {view === "creditos" && <Creditos ctx={ctx} />}
           {view === "cuotas" && <Cuotas ctx={ctx} />}
+          {view === "recordatorios" && <Recordatorios ctx={ctx} />}
           {view === "cobranzas" && <Cobranzas ctx={ctx} />}
+          {view === "asesores" && isAdmin && <Asesores ctx={ctx} />}
           {view === "config" && <Configuracion ctx={ctx} />}
         </div>
       </div>
@@ -171,7 +303,7 @@ function NavBtn({ active, onClick, icon, label, tid }) {
 
 /* ================= DASHBOARD ================= */
 function Dashboard({ ctx }) {
-  const { config, credits, clientById, openModal } = ctx;
+  const { config, credits, clientById, openModal, user } = ctx;
 
   const stats = useMemo(() => {
     const carteraActiva = credits.filter((c) => creditEstado(c) === "Activo").reduce((s, c) => s + saldoPendiente(c), 0);
@@ -179,18 +311,18 @@ function Dashboard({ ctx }) {
     const allCuotas = credits.flatMap((c) => c.cuotas.map((q) => ({ ...q, clientId: c.clientId, creditId: c.id })));
     const vencidas = allCuotas.filter(isVencida);
     const hoyStr = new Date().toDateString();
-    const cobradoHoy = allCuotas.filter((q) => q.estado === "Pagada" && q.fechaPago && new Date(q.fechaPago).toDateString() === hoyStr).reduce((s, q) => s + q.montoPagado, 0);
+    const cobradoHoy = allCuotas.filter((q) => q.estado === "Pagada" && q.fechaPago && new Date(q.fechaPago).toDateString() === hoyStr && q.atendioPor === user.name).reduce((s, q) => s + q.montoPagado, 0);
     const proximos = allCuotas.filter((q) => q.estado !== "Pagada" && !isVencida(q)).sort((a, b) => new Date(a.fechaVencimiento) - new Date(b.fechaVencimiento)).slice(0, 6);
     return { carteraActiva, clientesActivos, vencidas, cobradoHoy, proximos };
-  }, [credits]);
+  }, [credits, user.name]);
 
   return (
     <>
       <div className="stat-grid">
-        <div className="stat-card" data-testid="stat-cartera"><div className="stat-label">Cartera activa</div><div className="stat-value brand">{config.moneda} {fmt(stats.carteraActiva)}</div></div>
-        <div className="stat-card" data-testid="stat-clientes"><div className="stat-label">Clientes activos</div><div className="stat-value">{stats.clientesActivos}</div></div>
-        <div className="stat-card" data-testid="stat-vencidas"><div className="stat-label">Cuotas vencidas</div><div className="stat-value brick">{stats.vencidas.length}</div></div>
-        <div className="stat-card" data-testid="stat-cobrado"><div className="stat-label">Cobrado hoy</div><div className="stat-value amber">{config.moneda} {fmt(stats.cobradoHoy)}</div></div>
+        <div className="stat-card"><div className="stat-label">Cartera activa</div><div className="stat-value brand">{config.moneda} {fmt(stats.carteraActiva)}</div></div>
+        <div className="stat-card"><div className="stat-label">Clientes activos</div><div className="stat-value">{stats.clientesActivos}</div></div>
+        <div className="stat-card"><div className="stat-label">Cuotas vencidas</div><div className="stat-value brick">{stats.vencidas.length}</div></div>
+        <div className="stat-card"><div className="stat-label">Cobrado hoy {ctx.isAdmin ? "" : "(yo)"}</div><div className="stat-value amber">{config.moneda} {fmt(stats.cobradoHoy)}</div></div>
       </div>
 
       <div className="panel">
@@ -205,7 +337,7 @@ function Dashboard({ ctx }) {
                   <td className="mono">#{q.numero}</td>
                   <td className="mono">{fmtDate(q.fechaVencimiento)}</td>
                   <td className="mono">{config.moneda} {fmt(q.total)}</td>
-                  <td><button className="btn btn-primary btn-sm" data-testid={`pay-btn-${q.creditId}-${q.numero}`} onClick={() => openModal({ type: "pay", creditId: q.creditId, numero: q.numero })}>Registrar pago</button></td>
+                  <td><button className="btn btn-primary btn-sm" onClick={() => openModal({ type: "pay", creditId: q.creditId, numero: q.numero })}>Registrar pago</button></td>
                 </tr>
               )) : (<tr className="empty-row"><td colSpan="5">No hay cuotas vencidas</td></tr>)}
             </tbody>
@@ -247,7 +379,7 @@ function Clientes({ ctx }) {
       </div>
       <div className="table-wrap">
         <table>
-          <thead><tr><th>Nombre</th><th>DNI</th><th>Teléfono</th><th>Créditos</th><th>Deuda actual</th></tr></thead>
+          <thead><tr><th>Nombre</th><th>DNI</th><th>Teléfono</th><th>Ocupación</th><th>Créditos</th><th>Deuda</th></tr></thead>
           <tbody>
             {clients.length ? clients.map((cl) => {
               const creds = creditsByClient(cl.id);
@@ -257,11 +389,12 @@ function Clientes({ ctx }) {
                   <td><strong>{cl.nombre}</strong></td>
                   <td className="mono">{cl.dni || "—"}</td>
                   <td className="mono">{cl.telefono || "—"}</td>
+                  <td>{cl.ocupacion || "—"}</td>
                   <td>{creds.length}</td>
                   <td className="mono">{deuda > 0 ? `${config.moneda} ${fmt(deuda)}` : "—"}</td>
                 </tr>
               );
-            }) : (<tr className="empty-row"><td colSpan="5">Todavía no registraste clientes. Crea el primero para empezar.</td></tr>)}
+            }) : (<tr className="empty-row"><td colSpan="6">Todavía no registraste clientes.</td></tr>)}
           </tbody>
         </table>
       </div>
@@ -271,23 +404,29 @@ function Clientes({ ctx }) {
 
 /* ================= CREDITOS ================= */
 function Creditos({ ctx }) {
-  const { credits, clientById, config, openModal } = ctx;
+  const { credits, clientById, userById, config, openModal, isAdmin } = ctx;
   return (
     <div className="panel">
       <div className="panel-head">
-        <div className="panel-title">Todos los créditos</div>
+        <div className="panel-title">{isAdmin ? "Todos los créditos" : "Mis créditos"}</div>
         <button className="btn btn-primary btn-sm" data-testid="new-credit-btn" onClick={() => openModal({ type: "credit" })}>+ Nuevo crédito</button>
       </div>
       <div className="table-wrap">
         <table>
-          <thead><tr><th>Cliente</th><th>Capital</th><th>Progreso</th><th>Saldo</th><th>Estado</th></tr></thead>
+          <thead>
+            <tr>
+              <th>Cliente</th><th>Capital</th><th>Progreso</th><th>Saldo</th>
+              {isAdmin && <th>Asesor</th>}<th>Estado</th>
+            </tr>
+          </thead>
           <tbody>
             {credits.length ? credits.map((cr) => {
               const cl = clientById(cr.clientId);
+              const asr = isAdmin ? userById(cr.asesorId) : null;
               const pagadas = cr.cuotas.filter((q) => q.estado === "Pagada").length;
               const pct = Math.round((100 * pagadas) / cr.cuotas.length);
               return (
-                <tr key={cr.id} className="clickable" data-testid={`credit-row-${cr.id}`} onClick={() => openModal({ type: "creditDetail", id: cr.id })}>
+                <tr key={cr.id} className="clickable" onClick={() => openModal({ type: "creditDetail", id: cr.id })}>
                   <td><strong>{cl ? cl.nombre : "—"}</strong></td>
                   <td className="mono">{config.moneda} {fmt(cr.capital)}</td>
                   <td>
@@ -295,10 +434,11 @@ function Creditos({ ctx }) {
                     <div className="hint">{pagadas}/{cr.cuotas.length} cuotas</div>
                   </td>
                   <td className="mono">{config.moneda} {fmt(saldoPendiente(cr))}</td>
+                  {isAdmin && <td>{asr?.name || "—"}</td>}
                   <td><span className={`badge ${creditEstado(cr) === "Pagado" ? "ok" : "pending"}`}>{creditEstado(cr)}</span></td>
                 </tr>
               );
-            }) : (<tr className="empty-row"><td colSpan="5">Todavía no registraste créditos.</td></tr>)}
+            }) : (<tr className="empty-row"><td colSpan={isAdmin ? 6 : 5}>Sin créditos.</td></tr>)}
           </tbody>
         </table>
       </div>
@@ -330,7 +470,7 @@ function Cuotas({ ctx }) {
             <button key={f} className={`filter-tab ${filter === f ? "active" : ""}`} data-testid={`filter-${f}`} onClick={() => setFilter(f)}>{f[0].toUpperCase() + f.slice(1)}</button>
           ))}
         </div>
-        <input className="search-input" data-testid="cuota-search" placeholder="Buscar cliente…" value={search} onChange={(e) => setSearch(e.target.value)} />
+        <input className="search-input" placeholder="Buscar cliente…" value={search} onChange={(e) => setSearch(e.target.value)} />
       </div>
       <div className="table-wrap">
         <table>
@@ -357,32 +497,149 @@ function Cuotas({ ctx }) {
   );
 }
 
+/* ================= RECORDATORIOS ================= */
+function Recordatorios({ ctx }) {
+  const { config, isAdmin, users, showToast } = ctx;
+  const [data, setData] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [asesorId, setAsesorId] = useState("");
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    try {
+      const params = asesorId ? { asesorId } : {};
+      const r = await api.get("/reminders", { params });
+      setData(r.data);
+    } catch (e) {
+      showToast(errMsg(e), "error");
+    } finally {
+      setLoading(false);
+    }
+  }, [asesorId, showToast]);
+
+  useEffect(() => { load(); }, [load]);
+
+  const markReminded = async (r) => {
+    try {
+      await api.post("/reminders/mark", { creditId: r.creditId, numero: r.numero });
+      showToast("Marcado como recordado");
+      load();
+    } catch (e) { showToast(errMsg(e), "error"); }
+  };
+
+  const totals = data ? {
+    vencidas: data.vencidas.length,
+    hoy: data.hoy.length,
+    manana: data.manana.length,
+    semana: data.semana.length,
+  } : { vencidas: 0, hoy: 0, manana: 0, semana: 0 };
+
+  return (
+    <>
+      {isAdmin && (
+        <div className="panel">
+          <div className="panel-head">
+            <div className="panel-title">Filtrar por asesor</div>
+          </div>
+          <div style={{ padding: "12px 18px" }}>
+            <select value={asesorId} onChange={(e) => setAsesorId(e.target.value)} style={{ width: 260 }} data-testid="reminders-asesor-filter">
+              <option value="">Todos los asesores</option>
+              {users.filter((u) => u.activo).map((u) => (
+                <option key={u.id} value={u.id}>{u.name} ({u.role})</option>
+              ))}
+            </select>
+          </div>
+        </div>
+      )}
+
+      <div className="kpi-row">
+        <div className="kpi kpi-brick"><div className="l">Vencidas</div><div className="v" data-testid="rem-vencidas">{totals.vencidas}</div></div>
+        <div className="kpi kpi-amber"><div className="l">Hoy</div><div className="v" data-testid="rem-hoy">{totals.hoy}</div></div>
+        <div className="kpi kpi-brand"><div className="l">Mañana</div><div className="v" data-testid="rem-manana">{totals.manana}</div></div>
+        <div className="kpi"><div className="l">Esta semana</div><div className="v" data-testid="rem-semana">{totals.semana}</div></div>
+      </div>
+
+      {loading && <div className="loading-msg">Cargando recordatorios…</div>}
+      {data && (
+        <>
+          <ReminderBucket title="Vencidas" icon={<BellRing size={16} />} kind="late" items={data.vencidas} config={config} onMark={markReminded} isAdmin={isAdmin} />
+          <ReminderBucket title="Vencen hoy" icon={<BellRing size={16} />} kind="pending" items={data.hoy} config={config} onMark={markReminded} isAdmin={isAdmin} />
+          <ReminderBucket title="Vencen mañana" kind="pending" items={data.manana} config={config} onMark={markReminded} isAdmin={isAdmin} />
+          <ReminderBucket title="Vencen esta semana" kind="ok" items={data.semana} config={config} onMark={markReminded} isAdmin={isAdmin} />
+        </>
+      )}
+    </>
+  );
+}
+
+function ReminderBucket({ title, icon, kind, items, config, onMark, isAdmin }) {
+  if (!items || !items.length) return null;
+  return (
+    <div className="panel">
+      <div className="panel-head">
+        <div className="panel-title" style={{ display: "flex", alignItems: "center", gap: 8 }}>
+          {icon}{title} <span className={`badge ${kind}`} style={{ marginLeft: 6 }}>{items.length}</span>
+        </div>
+      </div>
+      <div className="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>Cliente</th><th>Teléfono</th><th>Cuota #</th><th>Vencimiento</th><th>Monto</th>
+              {isAdmin && <th>Asesor</th>}<th>Recordado</th><th></th>
+            </tr>
+          </thead>
+          <tbody>
+            {items.map((r) => (
+              <tr key={`${r.creditId}-${r.numero}`}>
+                <td><strong>{r.cliente}</strong></td>
+                <td className="mono">
+                  {r.telefono ? (
+                    <a className="tel-link" href={`https://wa.me/51${r.telefono}`} target="_blank" rel="noreferrer">
+                      <Phone size={12} /> {r.telefono}
+                    </a>
+                  ) : "—"}
+                </td>
+                <td className="mono">#{r.numero}</td>
+                <td className="mono">{fmtDate(r.fechaVencimiento)}{r.dias > 0 ? ` (${r.dias}d)` : ""}</td>
+                <td className="mono">{config.moneda} {fmt(r.total)}</td>
+                {isAdmin && <td>{r.asesor}</td>}
+                <td>{r.recordadoEn ? <span className="badge ok"><CheckCheck size={11} /> {fmtDate(r.recordadoEn)}</span> : <span className="hint">—</span>}</td>
+                <td><button className="btn btn-secondary btn-sm" onClick={() => onMark(r)} data-testid={`mark-reminder-${r.creditId}-${r.numero}`}>Marqué</button></td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
 /* ================= COBRANZAS ================= */
 function Cobranzas({ ctx }) {
-  const { config } = ctx;
+  const { config, isAdmin, users } = ctx;
   const [desde, setDesde] = useState(todayISO().slice(0, 8) + "01");
   const [hasta, setHasta] = useState(todayISO());
+  const [asesorId, setAsesorId] = useState("");
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(false);
 
   const load = useCallback(async () => {
     setLoading(true);
     try {
-      const r = await api.get("/reports/cobranzas", { params: { desde, hasta } });
+      const params = { desde, hasta };
+      if (isAdmin && asesorId) params.asesorId = asesorId;
+      const r = await api.get("/reports/cobranzas", { params });
       setData(r.data);
-    } catch {
-      setData(null);
-    } finally {
-      setLoading(false);
-    }
-  }, [desde, hasta]);
+    } catch { setData(null); } finally { setLoading(false); }
+  }, [desde, hasta, asesorId, isAdmin]);
 
   useEffect(() => { load(); }, [load]);
 
   const exportCSV = () => {
     if (!data) return;
-    const header = ["Fecha", "Operación", "Cliente", "Cuota #", "Capital", "Interés", "Mora", "Total", "Método", "Operador"];
-    const rows = data.rows.map((r) => [fmtDateTime(r.fechaPago), r.operacion || "", r.cliente, r.numero, r.capital, r.interes, r.mora, r.total, r.metodoPago || "", r.atendioPor || ""]);
+    const header = ["Fecha", "Operación", "Cliente", "Cuota #", "Capital", "Interés", "Mora", "Total", "Método", "Operador", "Asesor"];
+    const rows = data.rows.map((r) => [fmtDateTime(r.fechaPago), r.operacion || "", r.cliente, r.numero, r.capital, r.interes, r.mora, r.total, r.metodoPago || "", r.atendioPor || "", r.asesor || ""]);
     const csv = [header, ...rows].map((r) => r.map((c) => `"${String(c).replace(/"/g, '""')}"`).join(",")).join("\n");
     const blob = new Blob(["\ufeff" + csv], { type: "text/csv;charset=utf-8;" });
     const url = URL.createObjectURL(blob);
@@ -394,15 +651,23 @@ function Cobranzas({ ctx }) {
     <>
       <div className="panel">
         <div className="panel-head">
-          <div className="panel-title">Filtro de fechas</div>
+          <div className="panel-title">Filtros</div>
           <div className="tag-row">
-            <button className="btn btn-ghost btn-sm" onClick={exportCSV} disabled={!data || !data.rows.length} data-testid="export-csv-btn"><Download size={14} /> Exportar CSV</button>
+            <button className="btn btn-ghost btn-sm" onClick={exportCSV} disabled={!data || !data.rows.length}><Download size={14} /> Exportar CSV</button>
           </div>
         </div>
         <div style={{ padding: "16px 18px" }}>
-          <div className="field-row">
-            <div className="field"><label>Desde</label><input type="date" value={desde} onChange={(e) => setDesde(e.target.value)} data-testid="report-desde" /></div>
-            <div className="field"><label>Hasta</label><input type="date" value={hasta} onChange={(e) => setHasta(e.target.value)} data-testid="report-hasta" /></div>
+          <div className="field-row-3">
+            <div className="field"><label>Desde</label><input type="date" value={desde} onChange={(e) => setDesde(e.target.value)} /></div>
+            <div className="field"><label>Hasta</label><input type="date" value={hasta} onChange={(e) => setHasta(e.target.value)} /></div>
+            {isAdmin && (
+              <div className="field"><label>Asesor</label>
+                <select value={asesorId} onChange={(e) => setAsesorId(e.target.value)} data-testid="cobranzas-asesor">
+                  <option value="">Todos</option>
+                  {users.filter((u) => u.activo).map((u) => <option key={u.id} value={u.id}>{u.name}</option>)}
+                </select>
+              </div>
+            )}
           </div>
         </div>
       </div>
@@ -411,15 +676,15 @@ function Cobranzas({ ctx }) {
       {data && (
         <>
           <div className="kpi-row">
-            <div className="kpi"><div className="l">Cantidad de cobros</div><div className="v" data-testid="kpi-cantidad">{data.totales.cantidad}</div></div>
+            <div className="kpi"><div className="l">Cantidad</div><div className="v">{data.totales.cantidad}</div></div>
             <div className="kpi"><div className="l">Capital</div><div className="v">{config.moneda} {fmt(data.totales.capital)}</div></div>
             <div className="kpi"><div className="l">Interés</div><div className="v">{config.moneda} {fmt(data.totales.interes)}</div></div>
-            <div className="kpi"><div className="l">Total cobrado</div><div className="v" data-testid="kpi-total">{config.moneda} {fmt(data.totales.total)}</div></div>
+            <div className="kpi"><div className="l">Total cobrado</div><div className="v">{config.moneda} {fmt(data.totales.total)}</div></div>
           </div>
 
           <div className="split-cols">
             <div className="panel">
-              <div className="panel-head"><div className="panel-title">Por método de pago</div></div>
+              <div className="panel-head"><div className="panel-title">Por método</div></div>
               <div className="table-wrap">
                 <table>
                   <thead><tr><th>Método</th><th>Total</th></tr></thead>
@@ -447,10 +712,10 @@ function Cobranzas({ ctx }) {
           </div>
 
           <div className="panel">
-            <div className="panel-head"><div className="panel-title">Detalle de cobros</div></div>
+            <div className="panel-head"><div className="panel-title">Detalle</div></div>
             <div className="table-wrap">
               <table>
-                <thead><tr><th>Fecha</th><th>Operación</th><th>Cliente</th><th>#</th><th>Total</th><th>Método</th><th>Operador</th></tr></thead>
+                <thead><tr><th>Fecha</th><th>Op.</th><th>Cliente</th><th>#</th><th>Total</th><th>Método</th><th>Operador</th>{isAdmin && <th>Asesor</th>}</tr></thead>
                 <tbody>
                   {data.rows.length ? data.rows.map((r, i) => (
                     <tr key={i}>
@@ -461,8 +726,9 @@ function Cobranzas({ ctx }) {
                       <td className="mono">{config.moneda} {fmt(r.total)}</td>
                       <td>{r.metodoPago || "—"}</td>
                       <td>{r.atendioPor || "—"}</td>
+                      {isAdmin && <td>{r.asesor}</td>}
                     </tr>
-                  )) : <tr className="empty-row"><td colSpan="7">Sin cobros en el rango seleccionado</td></tr>}
+                  )) : <tr className="empty-row"><td colSpan={isAdmin ? 8 : 7}>Sin cobros</td></tr>}
                 </tbody>
               </table>
             </div>
@@ -473,27 +739,83 @@ function Cobranzas({ ctx }) {
   );
 }
 
+/* ================= ASESORES (admin only) ================= */
+function Asesores({ ctx }) {
+  const { users, openModal, loadAll, showToast, user: currentUser } = ctx;
+
+  const toggle = async (u) => {
+    try {
+      await api.put(`/users/${u.id}`, { activo: !u.activo });
+      await loadAll();
+      showToast(u.activo ? "Asesor desactivado" : "Asesor activado");
+    } catch (e) { showToast(errMsg(e), "error"); }
+  };
+
+  const del = async (u) => {
+    if (!window.confirm(`¿Eliminar al asesor "${u.name}"?`)) return;
+    try {
+      await api.delete(`/users/${u.id}`);
+      await loadAll();
+      showToast("Asesor eliminado");
+    } catch (e) { showToast(errMsg(e), "error"); }
+  };
+
+  return (
+    <div className="panel">
+      <div className="panel-head">
+        <div className="panel-title">Asesores del equipo</div>
+        <button className="btn btn-primary btn-sm" data-testid="new-asesor-btn" onClick={() => openModal({ type: "user" })}>+ Nuevo asesor</button>
+      </div>
+      <div className="table-wrap">
+        <table>
+          <thead><tr><th>Nombre</th><th>Usuario</th><th>Rol</th><th>Estado</th><th>Creado</th><th></th></tr></thead>
+          <tbody>
+            {users.length ? users.map((u) => (
+              <tr key={u.id} data-testid={`user-row-${u.username}`}>
+                <td><strong>{u.name}</strong></td>
+                <td className="mono">{u.username}</td>
+                <td><span className={`badge ${u.role === "admin" ? "ok" : "pending"}`}>{u.role === "admin" ? "Administrador" : "Asesor"}</span></td>
+                <td>{u.activo ? <span className="badge ok">Activo</span> : <span className="badge late">Inactivo</span>}</td>
+                <td className="mono">{fmtDate(u.creadoEn)}</td>
+                <td>
+                  <div className="tag-row">
+                    <button className="btn btn-secondary btn-sm" onClick={() => openModal({ type: "user", existing: u })} data-testid={`edit-user-${u.username}`}>Editar</button>
+                    {u.role !== "admin" && u.id !== currentUser.id && (
+                      <>
+                        <button className="btn btn-ghost btn-sm" onClick={() => toggle(u)}>{u.activo ? "Desactivar" : "Activar"}</button>
+                        <button className="btn btn-danger btn-sm" onClick={() => del(u)}>Eliminar</button>
+                      </>
+                    )}
+                  </div>
+                </td>
+              </tr>
+            )) : <tr className="empty-row"><td colSpan="6">Sin asesores creados</td></tr>}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
 /* ================= CONFIG ================= */
 function Configuracion({ ctx }) {
-  const { config, loadAll, showToast } = ctx;
+  const { config, loadAll, showToast, isAdmin, openModal } = ctx;
   const [f, setF] = useState(config);
   const [importing, setImporting] = useState(false);
 
   const save = async () => {
-    try {
-      await api.put("/config", f);
-      await loadAll();
-      showToast("Configuración guardada");
-    } catch { showToast("Error al guardar", "error"); }
+    try { await api.put("/config", f); await loadAll(); showToast("Configuración guardada"); }
+    catch (e) { showToast(errMsg(e), "error"); }
   };
 
   const doExport = async () => {
-    const r = await api.get("/backup/export");
-    const blob = new Blob([JSON.stringify(r.data, null, 2)], { type: "application/json" });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a"); a.href = url;
-    a.download = `backup_creditos_${todayISO()}.json`; a.click();
-    URL.revokeObjectURL(url);
+    try {
+      const r = await api.get("/backup/export");
+      const blob = new Blob([JSON.stringify(r.data, null, 2)], { type: "application/json" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a"); a.href = url; a.download = `backup_creditos_${todayISO()}.json`; a.click();
+      URL.revokeObjectURL(url);
+    } catch (e) { showToast(errMsg(e), "error"); }
   };
 
   const doImport = async (file, mode) => {
@@ -506,10 +828,8 @@ function Configuracion({ ctx }) {
       await loadAll();
       showToast(`Importados ${r.data.clients} clientes y ${r.data.credits} créditos`);
     } catch (e) {
-      showToast("Error al importar: archivo inválido", "error");
-    } finally {
-      setImporting(false);
-    }
+      showToast(errMsg(e, "Archivo inválido"), "error");
+    } finally { setImporting(false); }
   };
 
   return (
@@ -518,46 +838,48 @@ function Configuracion({ ctx }) {
         <div className="panel-head"><div className="panel-title">Datos de la empresa</div></div>
         <div style={{ padding: 18 }}>
           <div className="field"><label>Nombre de la empresa</label>
-            <input data-testid="cfg-nombre" value={f.nombre} onChange={(e) => setF({ ...f, nombre: e.target.value })} />
+            <input data-testid="cfg-nombre" value={f.nombre} onChange={(e) => setF({ ...f, nombre: e.target.value })} disabled={!isAdmin} />
             <div className="hint">Aún puedes decidir el nombre. Cámbialo cuando quieras.</div>
           </div>
           <div className="field-row">
-            <div className="field"><label>RUC</label><input data-testid="cfg-ruc" value={f.ruc} onChange={(e) => setF({ ...f, ruc: e.target.value })} /></div>
-            <div className="field"><label>Moneda</label><input data-testid="cfg-moneda" value={f.moneda} onChange={(e) => setF({ ...f, moneda: e.target.value })} /></div>
+            <div className="field"><label>RUC</label><input value={f.ruc} onChange={(e) => setF({ ...f, ruc: e.target.value })} disabled={!isAdmin} /></div>
+            <div className="field"><label>Moneda</label><input value={f.moneda} onChange={(e) => setF({ ...f, moneda: e.target.value })} disabled={!isAdmin} /></div>
           </div>
           <div className="field"><label>Tasa de mora diaria (%)</label>
-            <input data-testid="cfg-mora" type="number" step="0.01" value={f.mora_diaria_pct} onChange={(e) => setF({ ...f, mora_diaria_pct: parseFloat(e.target.value) || 0 })} />
+            <input type="number" step="0.01" value={f.mora_diaria_pct} onChange={(e) => setF({ ...f, mora_diaria_pct: parseFloat(e.target.value) || 0 })} disabled={!isAdmin} />
             <div className="hint">Ej. 0.5 = 0.5% por cada día de atraso sobre (capital + interés).</div>
           </div>
-          <button className="btn btn-primary btn-block" onClick={save} data-testid="cfg-save">Guardar cambios</button>
+          {isAdmin && <button className="btn btn-primary btn-block" onClick={save} data-testid="cfg-save">Guardar cambios</button>}
+          {!isAdmin && <div className="hint">Solo el administrador puede modificar estos datos.</div>}
         </div>
       </div>
 
       <div className="panel">
-        <div className="panel-head"><div className="panel-title">Backup de datos</div></div>
+        <div className="panel-head"><div className="panel-title">Cuenta y seguridad</div></div>
         <div style={{ padding: 18 }}>
-          <p style={{ color: "var(--ink-soft)", fontSize: 13, marginTop: 0 }}>
-            Descarga un archivo JSON con todos tus clientes, créditos y configuración. Puedes restaurarlo en cualquier momento.
-          </p>
-          <button className="btn btn-secondary btn-block" onClick={doExport} data-testid="backup-export">
-            <Download size={14} /> Exportar backup (JSON)
+          <button className="btn btn-secondary btn-block" onClick={() => openModal({ type: "changePassword" })} data-testid="change-password-btn">
+            <KeyRound size={14} /> Cambiar mi contraseña
           </button>
-          <div style={{ height: 12 }} />
-          <label className="btn btn-ghost btn-block" style={{ cursor: "pointer" }}>
-            <Upload size={14} /> {importing ? "Importando…" : "Importar (fusionar)"}
-            <input type="file" accept="application/json" hidden data-testid="backup-import-merge"
-              onChange={(e) => e.target.files[0] && doImport(e.target.files[0], "merge")} />
-          </label>
-          <div style={{ height: 8 }} />
-          <label className="btn btn-danger btn-block" style={{ cursor: "pointer" }}>
-            <Upload size={14} /> Importar (reemplazar todo)
-            <input type="file" accept="application/json" hidden
-              onChange={(e) => {
-                if (e.target.files[0] && window.confirm("Esto eliminará TODOS los datos actuales antes de importar. ¿Continuar?")) {
-                  doImport(e.target.files[0], "replace");
-                }
-              }} />
-          </label>
+
+          {isAdmin && (
+            <>
+              <hr style={{ margin: "18px 0", border: "none", borderTop: "1px solid var(--line)" }} />
+              <div className="panel-title" style={{ marginBottom: 10 }}>Backup</div>
+              <button className="btn btn-secondary btn-block" onClick={doExport} data-testid="backup-export"><Download size={14} /> Exportar backup (JSON)</button>
+              <div style={{ height: 8 }} />
+              <label className="btn btn-ghost btn-block" style={{ cursor: "pointer" }}>
+                <Upload size={14} /> {importing ? "Importando…" : "Importar (fusionar)"}
+                <input type="file" accept="application/json" hidden onChange={(e) => e.target.files[0] && doImport(e.target.files[0], "merge")} />
+              </label>
+              <div style={{ height: 8 }} />
+              <label className="btn btn-danger btn-block" style={{ cursor: "pointer" }}>
+                <Upload size={14} /> Importar (reemplazar todo)
+                <input type="file" accept="application/json" hidden onChange={(e) => {
+                  if (e.target.files[0] && window.confirm("Esto eliminará TODOS los datos actuales.")) doImport(e.target.files[0], "replace");
+                }} />
+              </label>
+            </>
+          )}
         </div>
       </div>
     </div>
@@ -572,13 +894,22 @@ function ModalRoot({ modal, ctx }) {
   if (modal.type === "creditDetail") return <CreditDetailModal ctx={ctx} id={modal.id} />;
   if (modal.type === "pay") return <PayModal ctx={ctx} creditId={modal.creditId} numero={modal.numero} />;
   if (modal.type === "showReceipt") return <ShowReceiptFromCredit ctx={ctx} creditId={modal.creditId} numero={modal.numero} />;
+  if (modal.type === "user") return <UserModal ctx={ctx} existing={modal.existing} />;
+  if (modal.type === "changePassword") return <ChangePasswordModal ctx={ctx} />;
+  if (modal.type === "reassignCredit") return <ReassignCreditModal ctx={ctx} creditId={modal.creditId} />;
   return null;
 }
 
 /* ================= CLIENT MODAL ================= */
 function ClientModal({ ctx, existing }) {
   const isEdit = !!existing;
-  const [f, setF] = useState({ nombre: existing?.nombre || "", dni: existing?.dni || "", telefono: existing?.telefono || "", direccion: existing?.direccion || "" });
+  const [f, setF] = useState({
+    nombre: existing?.nombre || "",
+    dni: existing?.dni || "",
+    telefono: existing?.telefono || "",
+    ocupacion: existing?.ocupacion || "",
+    direccion: existing?.direccion || "",
+  });
   const [err, setErr] = useState({});
   const { loadAll, closeModal, openModal, showToast } = ctx;
 
@@ -594,17 +925,10 @@ function ClientModal({ ctx, existing }) {
   const save = async () => {
     if (!validate()) return;
     try {
-      const res = isEdit
-        ? await api.put(`/clients/${existing.id}`, f)
-        : await api.post("/clients", f);
-      await loadAll();
-      closeModal();
-      showToast(isEdit ? "Cliente actualizado" : "Cliente creado");
+      const res = isEdit ? await api.put(`/clients/${existing.id}`, f) : await api.post("/clients", f);
+      await loadAll(); closeModal(); showToast(isEdit ? "Cliente actualizado" : "Cliente creado");
       if (!isEdit) openModal({ type: "clientDetail", id: res.data.id });
-    } catch (e) {
-      const msg = e?.response?.data?.detail;
-      showToast(typeof msg === "string" ? msg : "Error al guardar", "error");
-    }
+    } catch (e) { showToast(errMsg(e), "error"); }
   };
 
   return (
@@ -612,12 +936,12 @@ function ClientModal({ ctx, existing }) {
       <div className="modal">
         <div className="modal-head">
           <div className="modal-title">{isEdit ? "Editar cliente" : "Nuevo cliente"}</div>
-          <button className="modal-close" onClick={closeModal} data-testid="modal-close">×</button>
+          <button className="modal-close" onClick={closeModal}>×</button>
         </div>
         <div className="modal-body">
           <div className="field">
             <label>Nombre completo</label>
-            <input data-testid="client-nombre" value={f.nombre} className={err.nombre ? "error" : ""} onChange={(e) => setF({ ...f, nombre: e.target.value })} placeholder="Ej. José Armando Yáñez" />
+            <input data-testid="client-nombre" value={f.nombre} className={err.nombre ? "error" : ""} onChange={(e) => setF({ ...f, nombre: e.target.value })} placeholder="Ej. José Yáñez" />
             {err.nombre && <div className="hint error">{err.nombre}</div>}
           </div>
           <div className="field-row">
@@ -632,6 +956,10 @@ function ClientModal({ ctx, existing }) {
               {err.telefono && <div className="hint error">{err.telefono}</div>}
             </div>
           </div>
+          <div className="field">
+            <label>Ocupación</label>
+            <input data-testid="client-ocupacion" value={f.ocupacion} onChange={(e) => setF({ ...f, ocupacion: e.target.value })} placeholder="Ej. Comerciante, Docente, Independiente…" />
+          </div>
           <div className="field"><label>Dirección</label><input value={f.direccion} onChange={(e) => setF({ ...f, direccion: e.target.value })} placeholder="Opcional" /></div>
         </div>
         <div className="modal-foot">
@@ -643,53 +971,53 @@ function ClientModal({ ctx, existing }) {
   );
 }
 
-/* ================= CLIENT DETAIL ================= */
 function ClientDetailModal({ ctx, id }) {
-  const { clientById, creditsByClient, config, loadAll, closeModal, openModal, showToast } = ctx;
+  const { clientById, creditsByClient, config, loadAll, closeModal, openModal, showToast, isAdmin, userById } = ctx;
   const cl = clientById(id);
   if (!cl) return null;
   const creds = creditsByClient(id);
 
   const del = async () => {
-    if (creds.length) { showToast("Este cliente tiene créditos registrados", "error"); return; }
-    if (!window.confirm("¿Eliminar este cliente? Esta acción no se puede deshacer.")) return;
-    try {
-      await api.delete(`/clients/${id}`);
-      await loadAll(); closeModal(); showToast("Cliente eliminado");
-    } catch { showToast("Error al eliminar", "error"); }
+    if (!window.confirm("¿Eliminar este cliente?")) return;
+    try { await api.delete(`/clients/${id}`); await loadAll(); closeModal(); showToast("Cliente eliminado"); }
+    catch (e) { showToast(errMsg(e), "error"); }
   };
 
   return (
     <div className="modal-overlay" onClick={(e) => e.target === e.currentTarget && closeModal()}>
       <div className="modal wide">
-        <div className="modal-head">
-          <div className="modal-title">{cl.nombre}</div>
-          <button className="modal-close" onClick={closeModal}>×</button>
-        </div>
+        <div className="modal-head"><div className="modal-title">{cl.nombre}</div><button className="modal-close" onClick={closeModal}>×</button></div>
         <div className="modal-body">
-          <div className="detail-meta" style={{ marginBottom: 16 }}>DNI {cl.dni || "—"} · Tel. {cl.telefono || "—"} · {cl.direccion || "Sin dirección registrada"}</div>
+          <div className="detail-meta" style={{ marginBottom: 16 }}>
+            DNI {cl.dni || "—"} · Tel. {cl.telefono || "—"} · Ocupación: {cl.ocupacion || "—"}<br />
+            {cl.direccion || "Sin dirección registrada"}
+          </div>
           <div className="tag-row" style={{ marginBottom: 14 }}>
             <button className="btn btn-secondary btn-sm" onClick={() => { closeModal(); openModal({ type: "client", existing: cl }); }}>Editar datos</button>
-            <button className="btn btn-danger btn-sm" onClick={del} data-testid="client-delete">Eliminar cliente</button>
+            <button className="btn btn-danger btn-sm" onClick={del}>Eliminar cliente</button>
           </div>
           <div className="panel-title" style={{ marginBottom: 8 }}>Créditos</div>
           <div className="table-wrap">
             <table>
-              <thead><tr><th>Capital</th><th>Cuotas</th><th>Saldo</th><th>Estado</th><th></th></tr></thead>
+              <thead><tr><th>Capital</th><th>Cuotas</th><th>Saldo</th>{isAdmin && <th>Asesor</th>}<th>Estado</th><th></th></tr></thead>
               <tbody>
-                {creds.length ? creds.map((cr) => (
-                  <tr key={cr.id} className="clickable" onClick={() => { closeModal(); openModal({ type: "creditDetail", id: cr.id }); }}>
-                    <td className="mono">{config.moneda} {fmt(cr.capital)}</td>
-                    <td>{cr.cuotas.filter((q) => q.estado === "Pagada").length}/{cr.cuotas.length}</td>
-                    <td className="mono">{config.moneda} {fmt(saldoPendiente(cr))}</td>
-                    <td><span className={`badge ${creditEstado(cr) === "Pagado" ? "ok" : "pending"}`}>{creditEstado(cr)}</span></td>
-                    <td>→</td>
-                  </tr>
-                )) : (<tr className="empty-row"><td colSpan="5">Sin créditos todavía</td></tr>)}
+                {creds.length ? creds.map((cr) => {
+                  const asr = isAdmin ? userById(cr.asesorId) : null;
+                  return (
+                    <tr key={cr.id} className="clickable" onClick={() => { closeModal(); openModal({ type: "creditDetail", id: cr.id }); }}>
+                      <td className="mono">{config.moneda} {fmt(cr.capital)}</td>
+                      <td>{cr.cuotas.filter((q) => q.estado === "Pagada").length}/{cr.cuotas.length}</td>
+                      <td className="mono">{config.moneda} {fmt(saldoPendiente(cr))}</td>
+                      {isAdmin && <td>{asr?.name || "—"}</td>}
+                      <td><span className={`badge ${creditEstado(cr) === "Pagado" ? "ok" : "pending"}`}>{creditEstado(cr)}</span></td>
+                      <td>→</td>
+                    </tr>
+                  );
+                }) : (<tr className="empty-row"><td colSpan={isAdmin ? 6 : 5}>Sin créditos</td></tr>)}
               </tbody>
             </table>
           </div>
-          <button className="btn btn-primary btn-block" style={{ marginTop: 14 }} onClick={() => { closeModal(); openModal({ type: "credit", preselectClientId: id }); }} data-testid="new-credit-for-client">+ Nuevo crédito para este cliente</button>
+          <button className="btn btn-primary btn-block" style={{ marginTop: 14 }} onClick={() => { closeModal(); openModal({ type: "credit", preselectClientId: id }); }}>+ Nuevo crédito</button>
         </div>
       </div>
     </div>
@@ -709,10 +1037,8 @@ function CreditModal({ ctx, preselectClientId }) {
       <div className="modal-overlay" onClick={closeModal}>
         <div className="modal">
           <div className="modal-head"><div className="modal-title">Sin clientes</div><button className="modal-close" onClick={closeModal}>×</button></div>
-          <div className="modal-body">Primero registra un cliente para poder crear créditos.</div>
-          <div className="modal-foot">
-            <button className="btn btn-primary" onClick={() => { closeModal(); openModal({ type: "client" }); }}>Registrar cliente</button>
-          </div>
+          <div className="modal-body">Primero registra un cliente.</div>
+          <div className="modal-foot"><button className="btn btn-primary" onClick={() => { closeModal(); openModal({ type: "client" }); }}>Registrar cliente</button></div>
         </div>
       </div>
     );
@@ -734,10 +1060,7 @@ function CreditModal({ ctx, preselectClientId }) {
       });
       await loadAll(); closeModal(); showToast("Crédito creado");
       openModal({ type: "creditDetail", id: res.data.id });
-    } catch (e) {
-      const msg = e?.response?.data?.detail;
-      showToast(typeof msg === "string" ? msg : "Error al crear crédito", "error");
-    }
+    } catch (e) { showToast(errMsg(e), "error"); }
   };
 
   return (
@@ -763,16 +1086,16 @@ function CreditModal({ ctx, preselectClientId }) {
               <input data-testid="credit-numcuotas" type="number" value={f.numCuotas} onChange={(e) => setF({ ...f, numCuotas: e.target.value })} placeholder="12" />
             </div>
             <div className="field"><label>Frecuencia</label>
-              <select data-testid="credit-frecuencia" value={f.frecuencia} onChange={(e) => setF({ ...f, frecuencia: e.target.value })}>
+              <select value={f.frecuencia} onChange={(e) => setF({ ...f, frecuencia: e.target.value })}>
                 <option>Diario</option><option>Semanal</option><option>Quincenal</option><option>Mensual</option>
               </select>
             </div>
           </div>
           <div className="field"><label>Fecha de inicio</label>
-            <input data-testid="credit-fecha" type="date" value={f.fechaInicio} onChange={(e) => setF({ ...f, fechaInicio: e.target.value })} />
+            <input type="date" value={f.fechaInicio} onChange={(e) => setF({ ...f, fechaInicio: e.target.value })} />
           </div>
           {capital > 0 && num > 0 && (
-            <div className="summary-box" data-testid="credit-preview">
+            <div className="summary-box">
               <div className="summary-row"><span>Interés total</span><span className="mono">{config.moneda} {fmt(interesTotal)}</span></div>
               <div className="summary-row"><span>Total a pagar</span><span className="mono">{config.moneda} {fmt(totalPagar)}</span></div>
               <div className="summary-row total"><span>Cuota ({num}x)</span><span className="mono">{config.moneda} {fmt(cuotaTotal)}</span></div>
@@ -790,17 +1113,16 @@ function CreditModal({ ctx, preselectClientId }) {
 
 /* ================= CREDIT DETAIL ================= */
 function CreditDetailModal({ ctx, id }) {
-  const { credits, clientById, config, loadAll, closeModal, openModal, showToast } = ctx;
+  const { credits, clientById, userById, config, loadAll, closeModal, openModal, showToast, isAdmin } = ctx;
   const cr = credits.find((c) => c.id === id);
   if (!cr) return null;
   const cl = clientById(cr.clientId);
+  const asr = userById(cr.asesorId);
 
   const del = async () => {
     if (!window.confirm("¿Eliminar este crédito y todas sus cuotas?")) return;
-    try {
-      await api.delete(`/credits/${id}`);
-      await loadAll(); closeModal(); showToast("Crédito eliminado");
-    } catch { showToast("Error al eliminar", "error"); }
+    try { await api.delete(`/credits/${id}`); await loadAll(); closeModal(); showToast("Crédito eliminado"); }
+    catch (e) { showToast(errMsg(e), "error"); }
   };
 
   return (
@@ -810,7 +1132,15 @@ function CreditDetailModal({ ctx, id }) {
         <div className="modal-body">
           <div className="detail-meta" style={{ marginBottom: 10 }}>
             Capital {config.moneda} {fmt(cr.capital)} · Interés {cr.tasaInteres}% · {cr.frecuencia} · Inicio {fmtDate(cr.fechaInicio + "T00:00:00")}
+            {asr && <> · Asesor: <strong>{asr.name}</strong></>}
           </div>
+          {isAdmin && (
+            <div className="tag-row" style={{ marginBottom: 12 }}>
+              <button className="btn btn-secondary btn-sm" onClick={() => { closeModal(); openModal({ type: "reassignCredit", creditId: cr.id }); }} data-testid="reassign-credit">
+                <UserCog size={14} /> Reasignar asesor
+              </button>
+            </div>
+          )}
           <div className="table-wrap">
             <table>
               <thead><tr><th>#</th><th>Vencimiento</th><th>Capital</th><th>Interés</th><th>Total</th><th>Estado</th><th></th></tr></thead>
@@ -833,7 +1163,42 @@ function CreditDetailModal({ ctx, id }) {
               </tbody>
             </table>
           </div>
-          <button className="btn btn-danger" style={{ marginTop: 14 }} onClick={del} data-testid="credit-delete">Eliminar crédito</button>
+          <button className="btn btn-danger" style={{ marginTop: 14 }} onClick={del}>Eliminar crédito</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* ================= REASSIGN CREDIT ================= */
+function ReassignCreditModal({ ctx, creditId }) {
+  const { credits, users, loadAll, closeModal, openModal, showToast } = ctx;
+  const cr = credits.find((c) => c.id === creditId);
+  const [asesorId, setAsesorId] = useState(cr?.asesorId || "");
+  if (!cr) return null;
+
+  const save = async () => {
+    try {
+      await api.patch(`/credits/${creditId}/asesor`, { asesorId });
+      await loadAll(); closeModal(); showToast("Crédito reasignado");
+      openModal({ type: "creditDetail", id: creditId });
+    } catch (e) { showToast(errMsg(e), "error"); }
+  };
+
+  return (
+    <div className="modal-overlay" onClick={(e) => e.target === e.currentTarget && closeModal()}>
+      <div className="modal">
+        <div className="modal-head"><div className="modal-title">Reasignar crédito</div><button className="modal-close" onClick={closeModal}>×</button></div>
+        <div className="modal-body">
+          <div className="field"><label>Asesor</label>
+            <select value={asesorId} onChange={(e) => setAsesorId(e.target.value)} data-testid="reassign-select">
+              {users.filter((u) => u.activo).map((u) => <option key={u.id} value={u.id}>{u.name} ({u.role})</option>)}
+            </select>
+          </div>
+        </div>
+        <div className="modal-foot">
+          <button className="btn btn-ghost" onClick={closeModal}>Cancelar</button>
+          <button className="btn btn-primary" onClick={save} data-testid="reassign-save">Guardar</button>
         </div>
       </div>
     </div>
@@ -842,7 +1207,7 @@ function CreditDetailModal({ ctx, id }) {
 
 /* ================= PAY MODAL ================= */
 function PayModal({ ctx, creditId, numero }) {
-  const { credits, clientById, config, operator, loadAll, closeModal, showToast, setReceipt } = ctx;
+  const { credits, clientById, config, loadAll, closeModal, showToast, setReceipt } = ctx;
   const cr = credits.find((c) => c.id === creditId);
   const q = cr?.cuotas.find((x) => x.numero === numero);
   const cl = clientById(cr?.clientId);
@@ -866,9 +1231,7 @@ function PayModal({ ctx, creditId, numero }) {
 
   if (!cr || !q) return null;
 
-  const applyMora = () => {
-    if (moraInfo) setPf({ ...pf, mora: moraInfo.mora.toFixed(2) });
-  };
+  const applyMora = () => moraInfo && setPf({ ...pf, mora: moraInfo.mora.toFixed(2) });
 
   const cap = parseFloat(pf.capital) || 0;
   const int = parseFloat(pf.interes) || 0;
@@ -878,17 +1241,12 @@ function PayModal({ ctx, creditId, numero }) {
   const confirm = async () => {
     try {
       const r = await api.post(`/credits/${creditId}/cuotas/${numero}/pagar`, {
-        capital: cap, interes: int, mora, metodoPago: pf.metodoPago, atendioPor: operator || "",
+        capital: cap, interes: int, mora, metodoPago: pf.metodoPago,
       });
-      await loadAll();
-      closeModal();
-      showToast("Pago registrado");
+      await loadAll(); closeModal(); showToast("Pago registrado");
       const nq = r.data.cuotas.find((x) => x.numero === numero);
       setReceipt({ credit: r.data, cuota: nq, client: cl });
-    } catch (e) {
-      const msg = e?.response?.data?.detail;
-      showToast(typeof msg === "string" ? msg : "Error al registrar pago", "error");
-    }
+    } catch (e) { showToast(errMsg(e), "error"); }
   };
 
   return (
@@ -898,25 +1256,24 @@ function PayModal({ ctx, creditId, numero }) {
         <div className="modal-body">
           <div className="detail-meta" style={{ marginBottom: 14 }}>{cl?.nombre} · Vence {fmtDate(q.fechaVencimiento)}</div>
           <div className="field-row">
-            <div className="field"><label>Capital</label><input data-testid="pay-capital" type="number" step="0.01" value={pf.capital} onChange={(e) => setPf({ ...pf, capital: e.target.value })} /></div>
-            <div className="field"><label>Interés</label><input data-testid="pay-interes" type="number" step="0.01" value={pf.interes} onChange={(e) => setPf({ ...pf, interes: e.target.value })} /></div>
+            <div className="field"><label>Capital</label><input type="number" step="0.01" value={pf.capital} onChange={(e) => setPf({ ...pf, capital: e.target.value })} /></div>
+            <div className="field"><label>Interés</label><input type="number" step="0.01" value={pf.interes} onChange={(e) => setPf({ ...pf, interes: e.target.value })} /></div>
           </div>
           <div className="field">
             <label>Mora</label>
             <div style={{ display: "flex", gap: 8 }}>
-              <input data-testid="pay-mora" type="number" step="0.01" value={pf.mora} onChange={(e) => setPf({ ...pf, mora: e.target.value })} />
+              <input type="number" step="0.01" value={pf.mora} onChange={(e) => setPf({ ...pf, mora: e.target.value })} />
               {moraInfo && moraInfo.dias > 0 && (
-                <button className="btn btn-secondary btn-sm" onClick={applyMora} data-testid="apply-mora" title={`Sugerido: ${moraInfo.dias} días de atraso × ${moraInfo.tasa_diaria_pct}%`}>
+                <button className="btn btn-secondary btn-sm" onClick={applyMora}>
                   <Coins size={14} /> Sugerir ({fmt(moraInfo.mora)})
                 </button>
               )}
             </div>
             {moraInfo && moraInfo.dias > 0 && <div className="hint">{moraInfo.dias} día(s) de atraso · Tasa {moraInfo.tasa_diaria_pct}%/día</div>}
-            {moraInfo && moraInfo.dias === 0 && <div className="hint">Sin atraso</div>}
           </div>
           <div className="field">
             <label>Método de pago</label>
-            <select data-testid="pay-metodo" value={pf.metodoPago} onChange={(e) => setPf({ ...pf, metodoPago: e.target.value })}>
+            <select value={pf.metodoPago} onChange={(e) => setPf({ ...pf, metodoPago: e.target.value })}>
               <option>Efectivo</option><option>Transferencia</option><option>Yape</option><option>Plin</option>
             </select>
           </div>
@@ -943,6 +1300,97 @@ function ShowReceiptFromCredit({ ctx, creditId, numero }) {
   return null;
 }
 
+/* ================= USER MODAL ================= */
+function UserModal({ ctx, existing }) {
+  const isEdit = !!existing;
+  const [f, setF] = useState({
+    username: existing?.username || "",
+    name: existing?.name || "",
+    password: "",
+    role: existing?.role || "asesor",
+  });
+  const { loadAll, closeModal, showToast } = ctx;
+
+  const save = async () => {
+    if (!f.name.trim()) { showToast("Nombre obligatorio", "error"); return; }
+    if (!isEdit && (!f.username.trim() || !f.password)) { showToast("Usuario y contraseña obligatorios", "error"); return; }
+    try {
+      if (isEdit) {
+        const upd = { name: f.name, role: f.role };
+        if (f.password) upd.password = f.password;
+        await api.put(`/users/${existing.id}`, upd);
+      } else {
+        await api.post("/users", f);
+      }
+      await loadAll(); closeModal(); showToast(isEdit ? "Asesor actualizado" : "Asesor creado");
+    } catch (e) { showToast(errMsg(e), "error"); }
+  };
+
+  return (
+    <div className="modal-overlay" onClick={(e) => e.target === e.currentTarget && closeModal()}>
+      <div className="modal">
+        <div className="modal-head"><div className="modal-title">{isEdit ? "Editar asesor" : "Nuevo asesor"}</div><button className="modal-close" onClick={closeModal}>×</button></div>
+        <div className="modal-body">
+          <div className="field"><label>Nombre completo</label>
+            <input data-testid="user-name" value={f.name} onChange={(e) => setF({ ...f, name: e.target.value })} placeholder="Ej. María López" />
+          </div>
+          <div className="field-row">
+            <div className="field"><label>Usuario</label>
+              <input data-testid="user-username" value={f.username} onChange={(e) => setF({ ...f, username: e.target.value.toLowerCase().replace(/[^a-z0-9._-]/g, "") })} disabled={isEdit} placeholder="maria.lopez" />
+              {isEdit && <div className="hint">No se puede cambiar el usuario</div>}
+            </div>
+            <div className="field"><label>Rol</label>
+              <select value={f.role} onChange={(e) => setF({ ...f, role: e.target.value })} disabled={isEdit && existing.role === "admin"}>
+                <option value="asesor">Asesor</option>
+                <option value="admin">Administrador</option>
+              </select>
+            </div>
+          </div>
+          <div className="field"><label>{isEdit ? "Nueva contraseña (opcional)" : "Contraseña"}</label>
+            <input data-testid="user-password" type="password" value={f.password} onChange={(e) => setF({ ...f, password: e.target.value })} placeholder={isEdit ? "Dejar en blanco para no cambiar" : "Mínimo 6 caracteres"} />
+          </div>
+        </div>
+        <div className="modal-foot">
+          <button className="btn btn-ghost" onClick={closeModal}>Cancelar</button>
+          <button className="btn btn-primary" onClick={save} data-testid="user-save">{isEdit ? "Guardar" : "Crear asesor"}</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function ChangePasswordModal({ ctx }) {
+  const { closeModal, showToast } = ctx;
+  const [f, setF] = useState({ current_password: "", new_password: "", confirm: "" });
+
+  const save = async () => {
+    if (f.new_password.length < 6) { showToast("La nueva contraseña debe tener al menos 6 caracteres", "error"); return; }
+    if (f.new_password !== f.confirm) { showToast("Las contraseñas no coinciden", "error"); return; }
+    try {
+      await api.post("/auth/change-password", { current_password: f.current_password, new_password: f.new_password });
+      closeModal();
+      showToast("Contraseña actualizada");
+    } catch (e) { showToast(errMsg(e), "error"); }
+  };
+
+  return (
+    <div className="modal-overlay" onClick={(e) => e.target === e.currentTarget && closeModal()}>
+      <div className="modal">
+        <div className="modal-head"><div className="modal-title">Cambiar contraseña</div><button className="modal-close" onClick={closeModal}>×</button></div>
+        <div className="modal-body">
+          <div className="field"><label>Contraseña actual</label><input type="password" value={f.current_password} onChange={(e) => setF({ ...f, current_password: e.target.value })} data-testid="cp-current" /></div>
+          <div className="field"><label>Nueva contraseña</label><input type="password" value={f.new_password} onChange={(e) => setF({ ...f, new_password: e.target.value })} data-testid="cp-new" /></div>
+          <div className="field"><label>Confirmar nueva contraseña</label><input type="password" value={f.confirm} onChange={(e) => setF({ ...f, confirm: e.target.value })} data-testid="cp-confirm" /></div>
+        </div>
+        <div className="modal-foot">
+          <button className="btn btn-ghost" onClick={closeModal}>Cancelar</button>
+          <button className="btn btn-primary" onClick={save} data-testid="cp-save">Cambiar</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 /* ================= RECEIPT ================= */
 function Receipt({ data, config, onClose }) {
   const { credit, cuota, client } = data;
@@ -952,8 +1400,8 @@ function Receipt({ data, config, onClose }) {
     <div className="receipt-overlay" onClick={(e) => e.target === e.currentTarget && onClose()}>
       <div className="receipt-wrap">
         <div className="receipt-actions">
-          <button className="btn btn-secondary" onClick={() => window.print()} data-testid="print-receipt"><Printer size={14} /> Imprimir</button>
-          <button className="btn btn-ghost" style={{ background: "#fff" }} onClick={onClose} data-testid="close-receipt">Cerrar</button>
+          <button className="btn btn-secondary" onClick={() => window.print()}><Printer size={14} /> Imprimir</button>
+          <button className="btn btn-ghost" style={{ background: "#fff" }} onClick={onClose}>Cerrar</button>
         </div>
         <div className="receipt" id="receiptPrintArea">
           <div className="receipt-weave" />
