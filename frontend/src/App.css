@@ -109,6 +109,7 @@ tr.clickable:hover{background:var(--brand-tint);}
 .field label{display:block;font-size:12px;font-weight:600;color:var(--ink-soft);margin-bottom:6px;}
 .field input,.field select{width:100%;border:1px solid var(--line);border-radius:8px;padding:10px 12px;font-size:13.5px;font-family:'Inter';background:#fdfdfc;transition:border-color .15s, box-shadow .15s;}
 .field input:focus,.field select:focus{outline:none;border-color:var(--brand);box-shadow:0 0 0 3px rgba(20,99,86,.12);}
+.field input:disabled,.field select:disabled{background:#F5F6F3;color:var(--ink-soft);cursor:not-allowed;opacity:.7;}
 .field input.error{border-color:var(--brick);}
 .field-row{display:grid;grid-template-columns:1fr 1fr;gap:12px;}
 .field-row-3{display:grid;grid-template-columns:repeat(3,1fr);gap:12px;}

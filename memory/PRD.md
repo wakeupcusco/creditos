@@ -1,50 +1,62 @@
 # Cartera de Créditos — PRD
 
 ## Original problem statement
-El usuario tenía una plantilla HTML (`prestamos-app.html`) para gestionar créditos/préstamos que usaba `window.storage` (API inexistente) y por lo tanto no era funcional. Solicitó:
-1. Hacerla funcional con **backend real + base de datos**.
-2. Agregar mejoras: **exportar/importar JSON, reporte de cobranzas, validación de DNI/teléfono, cálculo automático de mora** por días de atraso.
-3. Hacerla **responsive** y proponer una **imagen/logo** (nombre de la empresa queda por definir).
+El usuario tenía una plantilla HTML de gestión de créditos/préstamos que usaba `window.storage` (API inexistente). Pidió: (1) hacerla funcional con backend real + base de datos, (2) exportar/importar JSON, reporte de cobranzas, validación DNI/teléfono, cálculo automático de mora, (3) responsive. Iteración 2: sistema de perfiles admin/asesor, campo ocupación en clientes, panel de recordatorios de vencimientos.
 
 ## Architecture
-- **Backend**: FastAPI (`/app/backend/server.py`) + MongoDB (motor). Todos los endpoints con prefijo `/api`.
-- **Frontend**: React 19 (`/app/frontend/src/App.js` + `App.css`), estilo original preservado (paleta verde `#146356`, tipografías Fraunces / Inter / IBM Plex Mono), 100% responsive con hamburguesa a partir de 780px.
-- **Persistencia**: colecciones Mongo `clients`, `credits`, `config`.
-- **Logo**: SVG inline (`BrandIcon`) con motivo de "monedas" en tonos brand/dorado.
+- **Backend**: FastAPI (`/app/backend/server.py`) + MongoDB (motor). Auth JWT (Bearer). RBAC en `admin` / `asesor`.
+- **Frontend**: React 19 (`/app/frontend/src/App.js` + `App.css`), responsive con hamburguesa <780px.
+- **Persistencia**: colecciones `users`, `clients`, `credits`, `config`. Contraseñas con bcrypt.
+- **Autenticación**: JWT HS256, 12h TTL, secreto en `JWT_SECRET`. Admin seedeado al arranque con `ADMIN_USERNAME`/`ADMIN_PASSWORD` (idempotente).
 
 ## Core requirements
-- Gestión de clientes con validación peruana (DNI 8 dígitos, teléfono 9 dígitos iniciando con 9).
-- Gestión de créditos con cálculo automático de plan de cuotas (frecuencias: Diario / Semanal / Quincenal / Mensual).
-- Registro de pagos con captura de método (Efectivo/Transferencia/Yape/Plin), operador y generación de recibo imprimible.
-- Cálculo automático de mora por días de atraso según tasa configurable.
-- Reporte de cobranzas por rango de fechas con desglose por método y operador, exportable a CSV.
-- Backup/Restore JSON completo (fusionar o reemplazar).
+- Login por usuario+contraseña.
+- Perfiles admin/asesor con visibilidad diferenciada de créditos y funcionalidades.
+- Sólo admin crea/edita asesores desde sección "Asesores".
+- Créditos se autoasignan al asesor que los crea; admin puede reasignar.
+- Clientes compartidos entre asesores; validaciones DNI (8 díg) y teléfono peruano (9 díg iniciando en 9), campo ocupación.
+- Cobranzas: pago genera recibo con "Usuario" = nombre del asesor autenticado.
+- Cálculo automático de mora por días de atraso (tasa configurable).
+- Panel de Recordatorios: buckets Vencidas / Hoy / Mañana / Esta semana + botón "Marqué"; enlace WhatsApp por teléfono.
+- Reporte de cobranzas por rango con filtro por asesor (admin), exportable CSV.
+- Backup export/import JSON (admin).
+- Configuración editable de empresa (admin).
 
 ## Personas
-- **Cobrador / Operador**: registra pagos día a día, imprime recibos, ve cuotas vencidas y próximas.
-- **Administrador**: crea clientes/créditos, ajusta configuración de empresa (nombre, RUC, moneda, tasa de mora), corre reportes y exporta backups.
+- **Administrador**: gestiona asesores, ve todos los créditos, configura empresa/mora, corre reportes globales, reasigna créditos.
+- **Asesor (cobrador)**: ve solo sus créditos/cuotas, registra pagos, imprime recibos, gestiona sus recordatorios de cobranza.
 
-## What's been implemented (2026-01-07)
-- CRUD completo de clientes con validaciones inline (frontend + backend Pydantic).
-- CRUD completo de créditos con generación automática de cuotas y preview en vivo.
-- Registro de pagos + generación de recibo imprimible (formato original preservado).
-- Sugerencia automática de mora por días de atraso (endpoint `/api/mora/preview` + botón "Sugerir" en el modal de pago).
-- Reporte de cobranzas (`/api/reports/cobranzas`) con filtros de fecha, KPIs, desglose por método y operador, exportación CSV.
-- Backup export/import JSON (modos merge y replace).
-- Configuración editable de empresa (nombre, RUC, moneda, tasa de mora diaria).
-- UI responsive completa: sidebar deslizable en móvil, grillas adaptativas, tablas con scroll horizontal.
-- Testing pasado 100% (backend 23/23 pytest + flujos frontend críticos verificados por testing subagent).
+## What's been implemented
+### Iteration 1 (2026-01-07)
+- CRUD clientes y créditos + generación automática de plan de cuotas.
+- Pago + recibo imprimible.
+- Mora automática por días de atraso.
+- Reporte de cobranzas con export CSV.
+- Backup/restore JSON.
+- UI responsive completa.
 
-## Backlog / Future
-- **P1**: Autenticación (JWT) — actualmente todos los endpoints son públicos.
-- **P1**: Recordatorios automáticos de cuotas por WhatsApp/SMS (Twilio) o Telegram.
-- **P2**: Dashboard con gráficos temporales (Recharts) de cobranzas por semana/mes.
-- **P2**: Historial/auditoría de cambios por cliente y crédito.
-- **P2**: Múltiples usuarios/operadores con perfiles y permisos.
-- **P3**: Modo oscuro.
-- **P3**: PWA / soporte offline.
+### Iteration 2 (2026-01-07)
+- Auth JWT + login screen + logout.
+- Sistema RBAC admin/asesor con visibilidad diferenciada (asesor solo ve sus créditos).
+- Sección "Asesores" (admin) con CRUD completo + activar/desactivar.
+- Cambio de contraseña propio.
+- Reasignación de créditos por admin.
+- Campo `ocupacion` en clientes.
+- Panel de Recordatorios con buckets y marcado.
+- Enlace directo a WhatsApp (`wa.me/51<telefono>`) desde recordatorios.
+- Filtro por asesor en Cobranzas y Recordatorios (admin).
+- Testing: 31/31 backend PASS + flujos frontend críticos verificados.
+
+## Backlog
+- **P1**: Recordatorios automáticos por WhatsApp/Telegram (Twilio/Bot).
+- **P1**: Rate-limit y lockout de brute-force en /auth/login.
+- **P2**: Historial de auditoría por cliente y crédito.
+- **P2**: Dashboard con gráficos temporales (Recharts).
+- **P2**: Comisión/meta por asesor.
+- **P3**: Modo oscuro, PWA offline.
 
 ## Next tasks list
-1. Definir nombre definitivo de la empresa y actualizarlo desde Configuración.
-2. (Opcional) Añadir autenticación si se va a exponer públicamente.
-3. (Opcional) Integrar Twilio/Telegram para recordatorios automatizados.
+1. Definir nombre definitivo de la empresa (editable en Configuración).
+2. Crear los asesores reales del equipo desde la sección "Asesores".
+3. Cambiar la contraseña del admin desde Configuración (admin123 es solo para el primer login).
+4. (Opcional) Recordatorios automáticos por WhatsApp/Telegram.
