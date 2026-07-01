@@ -47,6 +47,13 @@ El usuario tenía una plantilla HTML de gestión de créditos/préstamos que usa
 - Filtro por asesor en Cobranzas y Recordatorios (admin).
 - Testing: 31/31 backend PASS + flujos frontend críticos verificados.
 
+### Iteration 3 (2026-01-07)
+- **Ranking de asesores** (admin only): endpoint `/api/reports/ranking` con períodos mes/mes anterior/últimos 90 días/todo. UI con medallas 🥇🥈🥉, KPIs de total cobrado, mora recuperada, cuotas y asesores, y tabla con capital/interés/mora/puntuales/atrasadas/% puntualidad/créditos activos/cartera pendiente.
+- **Créditos diarios lun-sáb**: la lógica de `add_interval` para frecuencia "Diario" ahora salta los domingos (weekday=6). Hint visual en el modal de nuevo crédito.
+- **Cronograma imprimible con firma**: botón "Imprimir cronograma" en el detalle del crédito. Abre nueva ventana con datos completos del cliente, tabla de cuotas y dos áreas de firma (cliente y asesor).
+- **Mora auto-aplicada + exonerable**: al abrir el modal de pago sobre una cuota vencida, la mora sugerida se pre-carga automáticamente. Editable manualmente, con botón rápido "Exonerar" que la pone en 0.
+- Testing: **45/45 backend PASS**, frontend ~95% verificado.
+
 ## Backlog
 - **P1**: Recordatorios automáticos por WhatsApp/Telegram (Twilio/Bot).
 - **P1**: Rate-limit y lockout de brute-force en /auth/login.
