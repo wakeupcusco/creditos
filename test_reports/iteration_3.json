@@ -1,0 +1,43 @@
+{
+  "summary": "Iteration 3 (Diario Lun-Sáb, Ranking admin-only, Print Cronograma, Mora auto/exonerar) tested end-to-end. Backend: 14/14 new pytest cases in test_iteration3_ranking_diario.py PASS + 31/31 iteration-2 regression tests still PASS (45/45 total). Frontend: admin sees Ranking nav with 4 period tabs (mes/prev_mes/trimestre/all) and medals 🥇🥈🥉 in top-3 rows; asesor 'ana.torres' does NOT see Ranking nor Asesores in sidebar; 'Nuevo crédito' modal shows the hint 'Los cobros diarios se calculan de lunes a sábado (sin domingos)' when frecuencia=Diario. Print-schedule and Exonerar buttons exist in code (grepped and testids match spec). No blocking issues.",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [
+      {"screen": "Ranking header", "issues": ["Fecha en header muestra 01/07/2026 (fecha del contenedor). Cuando period=mes, 'Este mes' se calcula desde 2026-07-01 → 2026-07-01. En tests reales el usuario verá el mes actual del servidor. Solo informativo."]}
+    ]
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_iteration3_ranking_diario.py",
+    "/app/backend/tests/test_iteration2_auth_rbac.py",
+    "/app/test_reports/pytest/iteration3_results.xml"
+  ],
+  "action_items": [
+    "Ninguna acción bloqueante. Considerar: (1) el testid documentado 'nav-credits' en el request no existe; el código usa 'nav-creditos' (español) — mantener consistencia con la documentación futura. (2) Mora auto: el POST /api/credits/{id}/cuotas/{n}/pagar NO recalcula la mora del servidor si el cliente envía mora=0; esto es intencional y permite exonerar, pero conviene documentarlo. (3) test_cartera_creditos.py (iter1) sigue desactualizado (sin auth y espera backup version=1); recomendar eliminarlo o modernizarlo.",
+    "Sembrar seed data con pagos reales (puntuales + atrasados) para poder validar visualmente el Ranking con datos > 0 en el ambiente de preview."
+  ],
+  "critical_code_review_comments": [
+    "server.py add_interval Diario: usa while + weekday()!=6 correctamente; probado con inicio en viernes, sábado y domingo. Salta domingos siempre.",
+    "server.py /api/reports/ranking: RBAC via require_admin OK (401/403/200). Cálculo de puntuales: `fp <= venc` — semánticamente correcto (mismo día = puntual).",
+    "server.py /api/reports/ranking: 'creditos_activos' cuenta cualquier crédito con al menos una cuota no pagada, independiente del asesorId actual del crédito — correcto pues stats se agrupan por cr.asesorId.",
+    "server.py pagar_cuota acepta mora=0 y calcula total = capital+interes+mora — exoneración funciona bien.",
+    "App.js printSchedule (línea ~51): genera HTML imprimible con firmas. No pude validar 100% el contenido HTML vía Playwright por window.open, pero la función está bien estructurada; recomiendo QA manual del PDF/impresión.",
+    "App.js PayModal (línea ~1442): auto-aplica mora solo si dias>0 && mora>0 — respeta la spec. Botón Exonerar solo se muestra si parseFloat(pf.mora)>0 — correcto.",
+    "Sidebar: nav-ranking condicionado por isAdmin — verificado en runtime (admin=visible, asesor=oculto).",
+    "Nota menor: el testid documentado 'nav-credits' en el review request NO existe; el real es 'nav-creditos' (español). Ajustar la documentación."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_iteration3_ranking_diario.py"
+  ],
+  "success_rate": {"backend": "100% (45/45)", "frontend": "~95% (todos los flujos críticos verificados; print-schedule verificado por code review, no por click en window.open)"},
+  "test_credentials": "admin/admin123 (auto-seed). Asesor de UI: ana.torres/ana12345 (persistente de iter2).",
+  "seed_data_creation": "Tests backend limpian todo con cleanup fixture. Se creó y eliminó: 1 cliente TEST_Diario1, 4 créditos (3 diarios + 1 mensual futuro), 1 asesor test_ranking_ase_*, y se pagaron 3 cuotas (borradas junto con el crédito).",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Ejecutar tests en serie: `REACT_APP_BACKEND_URL=... pytest -n 0 backend/tests/test_iteration3_ranking_diario.py backend/tests/test_iteration2_auth_rbac.py`. La fecha del servidor de preview está en JULIO 2026 (no enero como sugería la spec), por lo que period=mes usa 2026-07-01→hoy. Diario Lun-Sáb probado con fechas absolutas 2026-01-16..18, independiente de la fecha del server. Asesor ana.torres permanece en DB entre iteraciones — reusar. El testid documentado 'nav-credits' NO existe; usar 'nav-creditos'.",
+  "rca of the issue": "N/A — no bugs bloqueantes. Ajustes menores en documentación de testids sugeridos."
+}

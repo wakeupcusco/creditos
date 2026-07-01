@@ -3,8 +3,8 @@ import axios from "axios";
 import "./App.css";
 import {
   LayoutDashboard, Users, Wallet, ListChecks, Settings,
-  Menu, Download, Upload, FileBarChart2, Printer, Coins,
-  UserCog, Bell, LogOut, KeyRound, BellRing, CheckCheck, Phone
+  Menu, Download, Upload, FileBarChart2, Printer,
+  UserCog, Bell, LogOut, KeyRound, BellRing, CheckCheck, Phone, Trophy
 } from "lucide-react";
 
 const API = `${process.env.REACT_APP_BACKEND_URL}/api`;
@@ -46,6 +46,104 @@ const errMsg = (e, fb = "Error") => {
   if (Array.isArray(d)) return d.map((x) => x.msg).join(" · ");
   return fb;
 };
+
+/* Imprimir cronograma con firma */
+function printSchedule(credit, client, config) {
+  const total = credit.cuotas.reduce((s, q) => s + q.total, 0);
+  const totalCap = credit.cuotas.reduce((s, q) => s + q.capital, 0);
+  const totalInt = credit.cuotas.reduce((s, q) => s + q.interes, 0);
+  const w = window.open("", "cronograma", "width=800,height=900");
+  if (!w) return;
+  const rows = credit.cuotas.map((q) => `
+    <tr>
+      <td class="c">${q.numero}</td>
+      <td>${fmtDate(q.fechaVencimiento)}</td>
+      <td class="r">${fmt(q.capital)}</td>
+      <td class="r">${fmt(q.interes)}</td>
+      <td class="r"><strong>${fmt(q.total)}</strong></td>
+      <td class="c">${q.estado === "Pagada" ? "PAGADA" : ""}</td>
+      <td></td>
+    </tr>`).join("");
+  const html = `<!doctype html><html><head><meta charset="utf-8"><title>Cronograma de pagos</title>
+  <style>
+    *{box-sizing:border-box;}
+    body{font-family:'Helvetica Neue',Arial,sans-serif;color:#16221D;padding:24px 32px;max-width:800px;margin:0 auto;font-size:12px;line-height:1.4;}
+    h1{font-family:Georgia,serif;font-size:20px;margin:0 0 4px;color:#0E4A40;}
+    .sub{color:#5B655F;font-size:11px;letter-spacing:.5px;text-transform:uppercase;margin-bottom:20px;}
+    .top{display:flex;justify-content:space-between;align-items:flex-start;border-bottom:2px solid #0E4A40;padding-bottom:12px;margin-bottom:16px;}
+    .brand{font-family:Georgia,serif;font-weight:700;font-size:15px;color:#0E4A40;}
+    .brand-sub{font-size:10px;color:#5B655F;}
+    .meta-grid{display:grid;grid-template-columns:auto 1fr auto 1fr;gap:4px 14px;margin-bottom:18px;font-size:12px;}
+    .meta-grid .k{color:#5B655F;font-weight:600;}
+    table{width:100%;border-collapse:collapse;margin-top:6px;}
+    th,td{padding:6px 8px;border:1px solid #C8CFC5;text-align:left;font-size:11px;}
+    th{background:#E4EDE9;color:#0E4A40;font-weight:700;text-transform:uppercase;letter-spacing:.4px;font-size:10px;}
+    .c{text-align:center;}
+    .r{text-align:right;font-variant-numeric:tabular-nums;}
+    tfoot td{background:#F4F7F3;font-weight:700;}
+    .terms{margin-top:22px;font-size:11px;color:#333;line-height:1.6;text-align:justify;}
+    .sign-row{display:grid;grid-template-columns:1fr 1fr;gap:60px;margin-top:60px;}
+    .sign{border-top:1px solid #16221D;padding-top:6px;text-align:center;font-size:11px;}
+    .sign .who{font-weight:700;}
+    .sign .lbl{color:#5B655F;font-size:10px;margin-top:2px;}
+    .footer{margin-top:30px;font-size:10px;color:#5B655F;text-align:center;border-top:1px dashed #C8CFC5;padding-top:8px;}
+    @media print{body{padding:16px 24px;}}
+  </style></head><body>
+    <div class="top">
+      <div>
+        <div class="brand">${config.nombre || "Mi Financiera"}</div>
+        ${config.ruc ? `<div class="brand-sub">RUC: ${config.ruc}</div>` : ""}
+      </div>
+      <div style="text-align:right">
+        <div style="font-size:10px;color:#5B655F">Emitido</div>
+        <div style="font-weight:600">${fmtDate(new Date())}</div>
+      </div>
+    </div>
+    <h1>Cronograma de Pagos</h1>
+    <div class="sub">Contrato de crédito N° ${(credit.id || "").slice(0,8).toUpperCase()}</div>
+    <div class="meta-grid">
+      <div class="k">Cliente:</div><div><strong>${client?.nombre || "—"}</strong></div>
+      <div class="k">DNI:</div><div>${client?.dni || "—"}</div>
+      <div class="k">Teléfono:</div><div>${client?.telefono || "—"}</div>
+      <div class="k">Ocupación:</div><div>${client?.ocupacion || "—"}</div>
+      <div class="k">Dirección:</div><div colspan="3" style="grid-column:span 3">${client?.direccion || "—"}</div>
+      <div class="k">Capital:</div><div><strong>${config.moneda} ${fmt(credit.capital)}</strong></div>
+      <div class="k">Interés:</div><div>${credit.tasaInteres}%</div>
+      <div class="k">N° cuotas:</div><div>${credit.numCuotas} · ${credit.frecuencia}${credit.frecuencia === "Diario" ? " (lun-sáb)" : ""}</div>
+      <div class="k">Inicio:</div><div>${fmtDate(credit.fechaInicio + "T00:00:00")}</div>
+    </div>
+    <table>
+      <thead><tr>
+        <th class="c">#</th><th>Vencimiento</th><th class="r">Capital</th><th class="r">Interés</th><th class="r">Total (${config.moneda})</th><th class="c">Estado</th><th>Firma / observación</th>
+      </tr></thead>
+      <tbody>${rows}</tbody>
+      <tfoot><tr>
+        <td colspan="2" class="r">TOTALES</td>
+        <td class="r">${fmt(totalCap)}</td>
+        <td class="r">${fmt(totalInt)}</td>
+        <td class="r">${fmt(total)}</td>
+        <td colspan="2"></td>
+      </tr></tfoot>
+    </table>
+    <div class="terms">
+      <strong>Conformidad:</strong> El cliente declara haber leído y aceptado las condiciones del presente cronograma de pagos correspondiente al crédito otorgado por ${config.nombre || "Mi Financiera"}. Se compromete a cancelar cada cuota en la fecha de vencimiento indicada. El incumplimiento generará un interés moratorio conforme a la tasa vigente.
+    </div>
+    <div class="sign-row">
+      <div class="sign">
+        <div class="who">${client?.nombre || "—"}</div>
+        <div class="lbl">Firma del cliente · DNI ${client?.dni || "—"}</div>
+      </div>
+      <div class="sign">
+        <div class="who">${config.nombre || "Mi Financiera"}</div>
+        <div class="lbl">Sello / firma del asesor</div>
+      </div>
+    </div>
+    <div class="footer">Documento generado el ${fmtDateTime(new Date())} · ${config.nombre || "Mi Financiera"}</div>
+    <script>window.onload = () => { setTimeout(() => window.print(), 300); };</script>
+  </body></html>`;
+  w.document.write(html);
+  w.document.close();
+}
 
 /* ================= Auth Context ================= */
 const AuthCtx = createContext(null);
@@ -207,6 +305,7 @@ function App() {
     cuotas: "Cuotas",
     recordatorios: "Recordatorios",
     cobranzas: "Reporte de cobranzas",
+    ranking: "Ranking de asesores",
     asesores: "Asesores",
     config: "Configuración",
   }[view] || "";
@@ -235,6 +334,7 @@ function App() {
           <NavBtn active={view === "cuotas"} onClick={() => navigate("cuotas")} icon={<ListChecks size={18} />} label="Cuotas" tid="nav-cuotas" />
           <NavBtn active={view === "recordatorios"} onClick={() => navigate("recordatorios")} icon={<Bell size={18} />} label="Recordatorios" tid="nav-recordatorios" />
           <NavBtn active={view === "cobranzas"} onClick={() => navigate("cobranzas")} icon={<FileBarChart2 size={18} />} label="Cobranzas" tid="nav-cobranzas" />
+          {isAdmin && <NavBtn active={view === "ranking"} onClick={() => navigate("ranking")} icon={<Trophy size={18} />} label="Ranking" tid="nav-ranking" />}
           {isAdmin && <NavBtn active={view === "asesores"} onClick={() => navigate("asesores")} icon={<UserCog size={18} />} label="Asesores" tid="nav-asesores" />}
           <NavBtn active={view === "config"} onClick={() => navigate("config")} icon={<Settings size={18} />} label="Configuración" tid="nav-config" />
         </nav>
@@ -270,6 +370,7 @@ function App() {
           {view === "cuotas" && <Cuotas ctx={ctx} />}
           {view === "recordatorios" && <Recordatorios ctx={ctx} />}
           {view === "cobranzas" && <Cobranzas ctx={ctx} />}
+          {view === "ranking" && isAdmin && <Ranking ctx={ctx} />}
           {view === "asesores" && isAdmin && <Asesores ctx={ctx} />}
           {view === "config" && <Configuracion ctx={ctx} />}
         </div>
@@ -739,6 +840,107 @@ function Cobranzas({ ctx }) {
   );
 }
 
+/* ================= RANKING (admin only) ================= */
+function Ranking({ ctx }) {
+  const { config } = ctx;
+  const [period, setPeriod] = useState("mes");
+  const [data, setData] = useState(null);
+  const [loading, setLoading] = useState(true);
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    try {
+      const r = await api.get("/reports/ranking", { params: { period } });
+      setData(r.data);
+    } finally { setLoading(false); }
+  }, [period]);
+
+  useEffect(() => { load(); }, [load]);
+
+  const medal = (i) => (i === 0 ? "🥇" : i === 1 ? "🥈" : i === 2 ? "🥉" : `#${i + 1}`);
+
+  const totals = data ? {
+    cobrado: data.rows.reduce((s, r) => s + r.cobrado, 0),
+    mora: data.rows.reduce((s, r) => s + r.mora_recuperada, 0),
+    cuotas: data.rows.reduce((s, r) => s + r.puntuales + r.atrasadas, 0),
+  } : { cobrado: 0, mora: 0, cuotas: 0 };
+
+  const periodLabel = {
+    mes: "este mes", prev_mes: "el mes anterior", trimestre: "los últimos 90 días", all: "todo el histórico",
+  }[period];
+
+  return (
+    <>
+      <div className="panel">
+        <div className="panel-head">
+          <div className="panel-title">Período</div>
+        </div>
+        <div style={{ padding: "12px 18px" }}>
+          <div className="filter-tabs">
+            {[["mes", "Este mes"], ["prev_mes", "Mes anterior"], ["trimestre", "Últimos 90 días"], ["all", "Todo"]].map(([k, l]) => (
+              <button key={k} className={`filter-tab ${period === k ? "active" : ""}`} onClick={() => setPeriod(k)} data-testid={`period-${k}`}>{l}</button>
+            ))}
+          </div>
+          {data && data.desde && (
+            <div className="hint" style={{ marginTop: 8 }}>Rango: {data.desde} → {data.hasta}</div>
+          )}
+        </div>
+      </div>
+
+      <div className="kpi-row">
+        <div className="kpi kpi-brand"><div className="l">Total cobrado ({periodLabel})</div><div className="v">{config.moneda} {fmt(totals.cobrado)}</div></div>
+        <div className="kpi kpi-amber"><div className="l">Mora recuperada</div><div className="v">{config.moneda} {fmt(totals.mora)}</div></div>
+        <div className="kpi"><div className="l">Cuotas cobradas</div><div className="v">{totals.cuotas}</div></div>
+        <div className="kpi"><div className="l">Asesores</div><div className="v">{data ? data.rows.length : 0}</div></div>
+      </div>
+
+      {loading && <div className="loading-msg">Cargando ranking…</div>}
+      {data && (
+        <div className="panel">
+          <div className="panel-head"><div className="panel-title">Desempeño por asesor</div></div>
+          <div className="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th></th><th>Asesor</th>
+                  <th>Cobrado</th><th>Capital</th><th>Interés</th><th>Mora recup.</th>
+                  <th>Puntuales</th><th>Atrasadas</th><th>Puntualidad</th>
+                  <th>Créditos activos</th><th>Cartera pendiente</th>
+                </tr>
+              </thead>
+              <tbody>
+                {data.rows.length ? data.rows.map((r, i) => (
+                  <tr key={r.asesorId} data-testid={`ranking-row-${r.username}`}>
+                    <td style={{ fontSize: 20, textAlign: "center", width: 42 }}>{medal(i)}</td>
+                    <td>
+                      <strong>{r.asesor}</strong>
+                      <div className="hint">@{r.username} · {r.role === "admin" ? "Administrador" : "Asesor"}</div>
+                    </td>
+                    <td className="mono"><strong>{config.moneda} {fmt(r.cobrado)}</strong></td>
+                    <td className="mono">{fmt(r.capital_cobrado)}</td>
+                    <td className="mono">{fmt(r.interes_cobrado)}</td>
+                    <td className="mono">{fmt(r.mora_recuperada)}</td>
+                    <td className="mono"><span className="badge ok">{r.puntuales}</span></td>
+                    <td className="mono">{r.atrasadas ? <span className="badge late">{r.atrasadas}</span> : "—"}</td>
+                    <td className="mono">
+                      <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                        <div className="progress-bar" style={{ width: 60 }}><div className="progress-fill" style={{ width: `${r.puntualidad_pct}%` }} /></div>
+                        {r.puntualidad_pct}%
+                      </div>
+                    </td>
+                    <td className="mono">{r.creditos_activos}</td>
+                    <td className="mono">{config.moneda} {fmt(r.cartera_pendiente)}</td>
+                  </tr>
+                )) : <tr className="empty-row"><td colSpan="11">Sin datos en este período</td></tr>}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+    </>
+  );
+}
+
 /* ================= ASESORES (admin only) ================= */
 function Asesores({ ctx }) {
   const { users, openModal, loadAll, showToast, user: currentUser } = ctx;
@@ -1089,6 +1291,7 @@ function CreditModal({ ctx, preselectClientId }) {
               <select value={f.frecuencia} onChange={(e) => setF({ ...f, frecuencia: e.target.value })}>
                 <option>Diario</option><option>Semanal</option><option>Quincenal</option><option>Mensual</option>
               </select>
+              {f.frecuencia === "Diario" && <div className="hint">Los cobros diarios se calculan de lunes a sábado (sin domingos).</div>}
             </div>
           </div>
           <div className="field"><label>Fecha de inicio</label>
@@ -1138,6 +1341,16 @@ function CreditDetailModal({ ctx, id }) {
             <div className="tag-row" style={{ marginBottom: 12 }}>
               <button className="btn btn-secondary btn-sm" onClick={() => { closeModal(); openModal({ type: "reassignCredit", creditId: cr.id }); }} data-testid="reassign-credit">
                 <UserCog size={14} /> Reasignar asesor
+              </button>
+              <button className="btn btn-ghost btn-sm" onClick={() => printSchedule(cr, cl, config)} data-testid="print-schedule-admin">
+                <Printer size={14} /> Imprimir cronograma
+              </button>
+            </div>
+          )}
+          {!isAdmin && (
+            <div className="tag-row" style={{ marginBottom: 12 }}>
+              <button className="btn btn-ghost btn-sm" onClick={() => printSchedule(cr, cl, config)} data-testid="print-schedule">
+                <Printer size={14} /> Imprimir cronograma
               </button>
             </div>
           )}
@@ -1225,13 +1438,18 @@ function PayModal({ ctx, creditId, numero }) {
       try {
         const r = await api.get("/mora/preview", { params: { creditId, numero } });
         setMoraInfo(r.data);
+        // Auto-aplicar mora sugerida si hay días de atraso
+        if (r.data && r.data.dias > 0 && r.data.mora > 0) {
+          setPf((prev) => ({ ...prev, mora: r.data.mora.toFixed(2) }));
+        }
       } catch { /* ignore */ }
     })();
+     
   }, [creditId, numero]);
 
   if (!cr || !q) return null;
 
-  const applyMora = () => moraInfo && setPf({ ...pf, mora: moraInfo.mora.toFixed(2) });
+  const exonerarMora = () => setPf({ ...pf, mora: "0.00" });
 
   const cap = parseFloat(pf.capital) || 0;
   const int = parseFloat(pf.interes) || 0;
@@ -1262,14 +1480,19 @@ function PayModal({ ctx, creditId, numero }) {
           <div className="field">
             <label>Mora</label>
             <div style={{ display: "flex", gap: 8 }}>
-              <input type="number" step="0.01" value={pf.mora} onChange={(e) => setPf({ ...pf, mora: e.target.value })} />
-              {moraInfo && moraInfo.dias > 0 && (
-                <button className="btn btn-secondary btn-sm" onClick={applyMora}>
-                  <Coins size={14} /> Sugerir ({fmt(moraInfo.mora)})
+              <input type="number" step="0.01" value={pf.mora} onChange={(e) => setPf({ ...pf, mora: e.target.value })} data-testid="pay-mora" />
+              {parseFloat(pf.mora) > 0 && (
+                <button className="btn btn-ghost btn-sm" onClick={exonerarMora} data-testid="exonerar-mora" title="Poner mora en 0 (exonerar)">
+                  Exonerar
                 </button>
               )}
             </div>
-            {moraInfo && moraInfo.dias > 0 && <div className="hint">{moraInfo.dias} día(s) de atraso · Tasa {moraInfo.tasa_diaria_pct}%/día</div>}
+            {moraInfo && moraInfo.dias > 0 && (
+              <div className="hint">
+                Mora auto-calculada: <strong>{fmt(moraInfo.mora)}</strong> ({moraInfo.dias} día(s) × {moraInfo.tasa_diaria_pct}%). Puedes editarla o exonerarla.
+              </div>
+            )}
+            {moraInfo && moraInfo.dias === 0 && <div className="hint">Sin atraso</div>}
           </div>
           <div className="field">
             <label>Método de pago</label>

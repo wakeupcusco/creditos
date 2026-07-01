@@ -99,7 +99,14 @@ def op_number() -> str:
 
 def add_interval(d: datetime, frecuencia: str, count: int) -> datetime:
     if frecuencia == "Diario":
-        return d + timedelta(days=count)
+        # Lunes a sábado: saltar domingos (weekday 6)
+        cur = d
+        added = 0
+        while added < count:
+            cur = cur + timedelta(days=1)
+            if cur.weekday() != 6:
+                added += 1
+        return cur
     if frecuencia == "Semanal":
         return d + timedelta(days=7 * count)
     if frecuencia == "Quincenal":
@@ -749,6 +756,91 @@ async def report_cobranzas(
         "porMetodo": [{"metodo": k, "total": round(v, 2)} for k, v in by_method.items()],
         "porOperador": [{"operador": k, "total": round(v, 2)} for k, v in by_operator.items()],
     }
+
+
+@api.get("/reports/ranking")
+async def report_ranking(
+    period: Literal["mes", "prev_mes", "trimestre", "all"] = "mes",
+    admin: dict = Depends(require_admin),
+):
+    """Ranking de asesores. Métricas: monto cobrado, mora recuperada, cuotas puntuales,
+    cuotas atrasadas al pagar, tasa de puntualidad."""
+    hoy = datetime.now().date()
+    d_ini = d_fin = None
+    if period == "mes":
+        d_ini = hoy.replace(day=1)
+        d_fin = hoy
+    elif period == "prev_mes":
+        first_this = hoy.replace(day=1)
+        d_fin = first_this - timedelta(days=1)
+        d_ini = d_fin.replace(day=1)
+    elif period == "trimestre":
+        d_ini = hoy - timedelta(days=90)
+        d_fin = hoy
+
+    users = await db.users.find({"activo": True}, {"_id": 0, "password_hash": 0}).to_list(1000)
+    credits = await db.credits.find({}, {"_id": 0}).to_list(10000)
+
+    stats: dict = {u["id"]: {
+        "asesorId": u["id"],
+        "asesor": u["name"],
+        "username": u["username"],
+        "role": u["role"],
+        "cobrado": 0.0,
+        "capital_cobrado": 0.0,
+        "interes_cobrado": 0.0,
+        "mora_recuperada": 0.0,
+        "puntuales": 0,
+        "atrasadas": 0,
+        "creditos_activos": 0,
+        "cartera_pendiente": 0.0,
+    } for u in users}
+
+    for cr in credits:
+        aid = cr.get("asesorId")
+        if not aid or aid not in stats:
+            continue
+        if any(q["estado"] != "Pagada" for q in cr["cuotas"]):
+            stats[aid]["creditos_activos"] += 1
+            stats[aid]["cartera_pendiente"] += sum(q["total"] for q in cr["cuotas"] if q["estado"] != "Pagada")
+        for q in cr["cuotas"]:
+            if q["estado"] != "Pagada" or not q.get("fechaPago"):
+                continue
+            fp = parse_date_local(q["fechaPago"]).date()
+            if d_ini and fp < d_ini:
+                continue
+            if d_fin and fp > d_fin:
+                continue
+            stats[aid]["cobrado"] += q["total"]
+            stats[aid]["capital_cobrado"] += q["capital"]
+            stats[aid]["interes_cobrado"] += q["interes"]
+            stats[aid]["mora_recuperada"] += q.get("mora", 0)
+            venc = parse_date_local(q["fechaVencimiento"]).date()
+            if fp <= venc:
+                stats[aid]["puntuales"] += 1
+            else:
+                stats[aid]["atrasadas"] += 1
+
+    rows = []
+    for s in stats.values():
+        total_cobros = s["puntuales"] + s["atrasadas"]
+        s["puntualidad_pct"] = round(100.0 * s["puntuales"] / total_cobros, 1) if total_cobros else 0.0
+        s["cobrado"] = round(s["cobrado"], 2)
+        s["capital_cobrado"] = round(s["capital_cobrado"], 2)
+        s["interes_cobrado"] = round(s["interes_cobrado"], 2)
+        s["mora_recuperada"] = round(s["mora_recuperada"], 2)
+        s["cartera_pendiente"] = round(s["cartera_pendiente"], 2)
+        rows.append(s)
+    rows.sort(key=lambda r: r["cobrado"], reverse=True)
+
+    return {
+        "period": period,
+        "desde": d_ini.isoformat() if d_ini else None,
+        "hasta": d_fin.isoformat() if d_fin else None,
+        "rows": rows,
+    }
+
+
 
 
 # ============ BACKUP ============
