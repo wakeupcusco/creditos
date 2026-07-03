@@ -226,9 +226,6 @@ function LoginScreen() {
             {busy ? "Ingresando…" : "Ingresar"}
           </button>
         </form>
-        <div className="login-hint">
-          ¿Primera vez? Usuario <b>admin</b> / clave <b>admin123</b>. Cámbiala luego desde Configuración.
-        </div>
       </div>
     </div>
   );
