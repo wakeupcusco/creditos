@@ -7,7 +7,7 @@ import {
   UserCog, Bell, LogOut, KeyRound, BellRing, CheckCheck, Phone, Trophy
 } from "lucide-react";
 
-const API = `https://creditos-1-a18l.onrender.com/api`;
+const API = `https://creditos-weq1.onrender.com/api`;
 const api = axios.create({ baseURL: API });
 
 // Attach token from localStorage
